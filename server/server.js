@@ -23,7 +23,7 @@ const { createSpotify } = require('./spotify');
 const { createFolders } = require('./folders');
 const { createAccounts, MAX_TRIES, LOCK_MS } = require('./accounts');
 
-const VERSION = '1.11.0';
+const VERSION = '1.12.0';
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, '..', 'data'));
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
@@ -60,7 +60,7 @@ const spotify = createSpotify({
 /* Storage                                                             */
 /* ------------------------------------------------------------------ */
 
-const EMPTY = () => ({ media: [], playlists: [], screens: [], schedules: [], overrides: [], musicSchedules: [], settings: {} });
+const EMPTY = () => ({ media: [], playlists: [], screens: [], schedules: [], overrides: [], musicSchedules: [], settings: {}, playedOnce: {} });
 let db = EMPTY();
 try {
   if (fs.existsSync(DB_FILE)) {
@@ -114,49 +114,86 @@ const toMin = (t) => {
  * Days are 0=Sun … 6=Sat. Dates are inclusive YYYY-MM-DD.
  */
 function scheduleActive(s, now = new Date()) {
-  if (!s.enabled) return false;
+  return !!scheduleOccurrence(s, now);
+}
+
+/** The day (YYYY-MM-DD) the currently running window of schedule s started on, or null if it isn't running. */
+function scheduleOccurrence(s, now = new Date()) {
+  if (!s.enabled) return null;
   const st = toMin(s.startTime);
   const en = toMin(s.endTime);
-  if (st == null || en == null) return false;
+  if (st == null || en == null) return null;
   const mins = now.getHours() * 60 + now.getMinutes();
   let startDay = new Date(now);
   if (st < en) {
-    if (mins < st || mins >= en) return false;
+    if (mins < st || mins >= en) return null;
   } else if (st > en) {
     if (mins >= st) {
       /* today */
     } else if (mins < en) {
       startDay.setDate(startDay.getDate() - 1);
-    } else return false;
+    } else return null;
   }
   const days = Array.isArray(s.days) && s.days.length ? s.days : [0, 1, 2, 3, 4, 5, 6];
-  if (!days.includes(startDay.getDay())) return false;
+  if (!days.includes(startDay.getDay())) return null;
   const d = ymd(startDay);
-  if (s.startDate && d < s.startDate) return false;
-  if (s.endDate && d > s.endDate) return false;
-  return true;
+  if (s.startDate && d < s.startDate) return null;
+  if (s.endDate && d > s.endDate) return null;
+  return d;
 }
 
 const targets = (rule, screenId) => !!rule.allScreens || (rule.screenIds || []).includes(screenId);
 const overrideActive = (o, now = Date.now()) => !o.until || o.until > now;
 
-/** Work out what a screen should be showing right now. Takeover > schedule > default. */
+/**
+ * Work out what a screen should be showing right now. Takeover > schedule > default.
+ *
+ * "Play once" playlists: when a takeover or a schedule's window starts one, the screen plays it through
+ * once, reports that (playedOnce), and from then on it's skipped for that takeover / that day's window,
+ * so the screen drops to whatever comes next. onceKey identifies that one showing.
+ */
 function resolveScreen(screen, now = new Date()) {
-  const ov = db.overrides
+  const done = (db.playedOnce && db.playedOnce[screen.id]) || {};
+  const played = []; // names of play-once playlists already finished right now
+  const once = (pl, key) => (pl.playOnce ? key : null);
+
+  const ovs = db.overrides
     .filter((o) => overrideActive(o, now.getTime()) && targets(o, screen.id) && byId(db.playlists, o.playlistId))
-    .sort((a, b) => b.createdAt - a.createdAt)[0];
-  if (ov) {
-    return { source: 'takeover', label: 'Takeover', refId: ov.id, until: ov.until || null, playlist: byId(db.playlists, ov.playlistId) };
+    .sort((a, b) => b.createdAt - a.createdAt);
+  for (const ov of ovs) {
+    const pl = byId(db.playlists, ov.playlistId);
+    const key = once(pl, `takeover:${ov.id}`);
+    if (key && done[key]) { played.push(pl.name); continue; }
+    return { source: 'takeover', label: 'Takeover', refId: ov.id, until: ov.until || null, playlist: pl, onceKey: key };
   }
-  const sch = db.schedules
+  const schs = db.schedules
     .filter((s) => targets(s, screen.id) && byId(db.playlists, s.playlistId) && scheduleActive(s, now))
-    .sort((a, b) => (b.priority || 0) - (a.priority || 0) || toMin(b.startTime) - toMin(a.startTime))[0];
-  if (sch) {
-    return { source: 'schedule', label: sch.name || 'Schedule', refId: sch.id, playlist: byId(db.playlists, sch.playlistId) };
+    .sort((a, b) => (b.priority || 0) - (a.priority || 0) || toMin(b.startTime) - toMin(a.startTime));
+  for (const sch of schs) {
+    const pl = byId(db.playlists, sch.playlistId);
+    // Includes the start time, so moving a schedule to a later time today lets it play once again.
+    const key = once(pl, `schedule:${sch.id}:${scheduleOccurrence(sch, now)}:${sch.startTime}`);
+    if (key && done[key]) { played.push(pl.name); continue; }
+    return { source: 'schedule', label: sch.name || 'Schedule', refId: sch.id, playlist: pl, onceKey: key };
   }
+  const note = played.length ? `“${played[0]}” has played once` : '';
   const pl = byId(db.playlists, screen.defaultPlaylistId);
-  if (pl) return { source: 'default', label: 'Default', playlist: pl };
-  return { source: 'none', label: 'Nothing assigned', playlist: null };
+  if (pl) return { source: 'default', label: 'Default', playlist: pl, note };
+  return { source: 'none', label: 'Nothing assigned', playlist: null, note };
+}
+
+/** A screen finished a play-once playlist: remember it (kept in db.json, so a restart doesn't replay it). */
+function markPlayedOnce(screenId, key) {
+  const all = (db.playedOnce = db.playedOnce || {});
+  (all[screenId] = all[screenId] || {})[key] = Date.now();
+  // Tidy up: forget screens that are gone, takeovers that have ended, and schedule showings over 3 days old.
+  const live = new Set(db.overrides.map((o) => `takeover:${o.id}`));
+  const cutoff = Date.now() - 3 * 86400000;
+  for (const [sid, keys] of Object.entries(all)) {
+    if (!byId(db.screens, sid)) { delete all[sid]; continue; }
+    for (const [k, t] of Object.entries(keys)) if (k.startsWith('takeover:') ? !live.has(k) : t < cutoff) delete keys[k];
+  }
+  save();
 }
 
 const DEFAULT_DURATION = { image: 10, video: 0, web: 30, text: 10, countdown: 30 };
@@ -325,6 +362,7 @@ function cleanPlaylist(b) {
   return {
     name: str(b.name, 200) || 'Untitled playlist',
     transition: b.transition === 'none' ? 'none' : 'fade',
+    playOnce: !!b.playOnce, // when a schedule or takeover starts it: play through once, then step aside
     music: ['videos', 'all'].includes(b.music) ? b.music : 'keep',
     folder: cleanFolderFeed(b.folder, { items }),
     items,
@@ -552,6 +590,11 @@ route('GET', '/api/player/:id/state', (req, res, p, url) => {
   if (url.searchParams.has('res')) st.res = str(url.searchParams.get('res'), 20);
   if (url.searchParams.has('err')) st.error = str(url.searchParams.get('err'), 300);
   if (url.searchParams.has('music')) spotify.setHold(screen.id, url.searchParams.get('music') === '1', st.item);
+  // The player finished a play-once playlist. Only counts for what this screen is actually meant to be showing.
+  if (url.searchParams.has('played')) {
+    const key = url.searchParams.get('played');
+    if (key && resolveScreen(screen).onceKey === key) markPlayedOnce(screen.id, key);
+  }
 
   const r = resolveScreen(screen);
   const payload = {
@@ -560,6 +603,8 @@ route('GET', '/api/player/:id/state', (req, res, p, url) => {
     label: r.label,
     playlistId: r.playlist ? r.playlist.id : null,
     transition: r.playlist ? r.playlist.transition : 'fade',
+    playOnce: !!r.onceKey,
+    onceKey: r.onceKey || null,
     items: r.playlist ? buildItems(r.playlist, screen) : [],
     logo: logoInfo() ? logoInfo().url : DEFAULT_WORDMARK,
   };
@@ -682,7 +727,7 @@ route('GET', '/api/state', (req, res) => {
   const resolved = {};
   for (const s of db.screens) {
     const r = resolveScreen(s, now);
-    resolved[s.id] = { source: r.source, label: r.label, refId: r.refId || null, until: r.until || null, playlistId: r.playlist ? r.playlist.id : null, playlistName: r.playlist ? r.playlist.name : null };
+    resolved[s.id] = { source: r.source, label: r.label, refId: r.refId || null, until: r.until || null, playlistId: r.playlist ? r.playlist.id : null, playlistName: r.playlist ? r.playlist.name : null, playOnce: !!r.onceKey, note: r.note || '' };
   }
   const st = {};
   for (const [id, v] of Object.entries(status)) st[id] = Object.assign({}, v, { online: Date.now() - (v.lastSeen || 0) < ONLINE_MS });

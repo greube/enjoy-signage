@@ -417,9 +417,10 @@ function screenCard(s) {
       <div class="grow"><h3>${esc(s.name)}</h3><div class="loc">${esc(s.location || '')}${s.location ? ' · ' : ''}${esc(seen)}</div></div>
     </div>
     <div class="now">
-      <span class="badge ${r.source}">${badge}${r.source === 'schedule' ? ': ' + esc(r.label) : ''}</span>
+      <span class="badge ${r.source}">${badge}${r.source === 'schedule' ? ': ' + esc(r.label) : ''}${r.playOnce ? ' · plays once' : ''}</span>
       <div class="pl">${r.playlistName ? esc(r.playlistName) : '<span class="muted">No playlist — choose a default</span>'}</div>
       <div class="meta">${online && st.item ? 'Showing “' + esc(st.item) + '”' : ''}${online && st.res ? ' · ' + esc(st.res) : ''}${r.until ? ' · until ' + fmtUntil(r.until) : ''}</div>
+      ${r.note ? `<div class="meta">▶ ${esc(r.note)}</div>` : ''}
     </div>
     ${st.error && online ? `<div class="warn-line">⚠ ${esc(st.error)}</div>` : ''}
     <div class="linkbox"><code title="${esc(playerUrl(s.id))}">${esc(playerUrl(s.id))}</code><button class="btn sm ghost" data-action="copy" data-text="${esc(playerUrl(s.id))}">Copy</button></div>
@@ -632,7 +633,7 @@ VIEWS.playlists = () => {
     ${isAdminUser() ? '<button class="btn primary" data-action="pl-new">+ New playlist</button>' : ''}
   </header>
   ${S.db.playlists.length ? `<div class="split">
-    <aside class="pl-list">${S.db.playlists.map((p) => `<a href="#playlists" data-action="pl-select" data-id="${p.id}" class="${p.id === selectedPl ? 'active' : ''}"><b>${esc(p.name)}</b><span>${p.items.length} item${p.items.length === 1 ? '' : 's'} · ${playlistLength(p)}${spotifyOn() && p.items.some((it) => pausesMusic(p, it)) ? ' · ♪ pauses music' : ''}${p.folder ? ' · 📁 ' + esc(p.folder.name) : ''}</span></a>`).join('')}</aside>
+    <aside class="pl-list">${S.db.playlists.map((p) => `<a href="#playlists" data-action="pl-select" data-id="${p.id}" class="${p.id === selectedPl ? 'active' : ''}"><b>${esc(p.name)}</b><span>${p.items.length} item${p.items.length === 1 ? '' : 's'} · ${playlistLength(p)}${p.playOnce ? ' · ▶ plays once' : ''}${spotifyOn() && p.items.some((it) => pausesMusic(p, it)) ? ' · ♪ pauses music' : ''}${p.folder ? ' · 📁 ' + esc(p.folder.name) : ''}</span></a>`).join('')}</aside>
     <section id="pl-editor">${plEditor()}</section>
   </div>` : `<div class="grid">${isAdminUser() ? emptyBox('No playlists yet', 'Create a playlist, then add images, videos and slides to it.', '<button class="btn primary" data-action="pl-new">+ New playlist</button>') : emptyBox('No playlists to edit yet', 'An administrator hasn’t given you any playlists yet. You can still upload content on the Media page.')}</div>`}`;
 };
@@ -767,9 +768,11 @@ function plEditor() {
     <div class="row">
       <input type="text" class="title-input grow" id="pl-name" value="${esc(p.name)}" aria-label="Playlist name">
       <label class="row small muted" style="gap:6px">Transition <select id="pl-transition" style="width:auto"><option value="fade">Crossfade</option><option value="none" ${p.transition === 'none' ? 'selected' : ''}>Cut</option></select></label>
+      <label class="row small muted" style="gap:6px" title="${ONCE_HINT}">At the end <select id="pl-end" style="width:auto"><option value="loop">Loop</option><option value="once" ${p.playOnce ? 'selected' : ''}>Play once</option></select></label>
       ${spotifyOn() ? `<label class="row small muted" style="gap:6px" title="What the Spotify background music does while this playlist is on a screen with sound">Music <select id="pl-music" style="width:auto">${Object.entries(MUSIC_LABEL).map(([k, v]) => `<option value="${k}" ${(p.music || 'keep') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>` : ''}
     </div>
     ${isAdminUser() ? `<div class="used-by" style="padding-left:6px">${used ? esc(used) : 'Not used by any screen or schedule yet.'}</div>` : ''}
+    <div class="hint" id="pl-once-hint" style="padding-left:6px" ${p.playOnce ? '' : 'hidden'}>▶ ${ONCE_HINT}</div>
     <div id="pl-folder-box">${folderBar(p)}</div>
     <ol class="pl-items" id="pl-items">
       ${p.items.map((it, i) => plRow(it, i)).join('') || `<li class="empty" style="list-style:none">${p.folder ? 'Nothing yet. Drop images or videos into the folder and they’ll appear here.' : 'This playlist is empty. Add some content, or link a drop folder.'}</li>`}
@@ -777,7 +780,7 @@ function plEditor() {
     <div class="pl-foot">
       <button class="btn" data-action="pl-add">+ Add content</button>
       ${p.folder || !isAdminUser() ? '' : '<button class="btn" data-action="pl-folder">📁 Link a drop folder…</button>'}
-      <span class="muted small" id="pl-total">Loop length: ${playlistLength(p)}</span>
+      <span class="muted small" id="pl-total">${lengthLabel(p)}</span>
       <span class="grow"></span>
       ${isAdminUser() ? '<button class="btn ghost danger-text" data-action="pl-delete">Delete</button>' : ''}
       <a class="btn" href="/player?playlist=${p.id}" target="_blank" rel="noopener" data-action="pl-preview">Preview ↗</a>
@@ -812,8 +815,10 @@ function setDirty(v = true) {
   const b = $('#pl-save');
   if (b) { b.disabled = !v; b.textContent = v ? 'Save changes' : 'Saved'; }
   const t = $('#pl-total');
-  if (t && plDraft) t.textContent = 'Loop length: ' + playlistLength(plDraft);
+  if (t && plDraft) t.textContent = lengthLabel(plDraft);
 }
+const lengthLabel = (p) => (p.playOnce ? 'Plays once: ' : 'Loop length: ') + playlistLength(p);
+const ONCE_HINT = 'Plays through once each time a schedule or takeover starts it, then the screen goes back to what it would otherwise show. Used as a screen’s default playlist, it still loops.';
 function rerenderItems() {
   $('#pl-editor').innerHTML = plEditor();
   bindPlEditor();
@@ -824,6 +829,7 @@ function bindPlEditor() {
   if (!list) return;
   $('#pl-name').addEventListener('input', (e) => { plDraft.name = e.target.value; setDirty(); });
   $('#pl-transition').addEventListener('change', (e) => { plDraft.transition = e.target.value; setDirty(); });
+  $('#pl-end').addEventListener('change', (e) => { plDraft.playOnce = e.target.value === 'once'; $('#pl-once-hint').hidden = !plDraft.playOnce; setDirty(); });
   $('#pl-music')?.addEventListener('change', (e) => { plDraft.music = e.target.value; setDirty(); rerenderItems(); });
   list.addEventListener('input', (e) => {
     const f = e.target.dataset.field;
@@ -904,7 +910,7 @@ function schedRow(s) {
   const time = st === en ? 'All day' : `${fmtTime(s.startTime)} – ${fmtTime(s.endTime)}${en < st ? ' (overnight)' : ''}`;
   return `<tr class="${s.enabled ? '' : 'off'}">
     <td><span class="swatch" style="background:${schedColor(s)}"></span><b>${esc(s.name)}</b> ${active ? '<span class="badge live">● Active now</span>' : ''}</td>
-    <td>${esc(playlist(s.playlistId)?.name || '—')}</td>
+    <td>${esc(playlist(s.playlistId)?.name || '—')}${playlist(s.playlistId)?.playOnce ? '<div class="muted small">▶ plays once</div>' : ''}</td>
     <td class="hide-sm">${targetLabel(s)}</td>
     <td>${daysLabel(s.days)}<div class="muted small">${time}</div></td>
     <td class="hide-sm small">${esc(dates)}</td>
@@ -1618,7 +1624,7 @@ const ACTIONS = {
     const id = plDraft.id;
     // loadedAt lets the server keep folder files that arrived after this copy was loaded. The folder link isn't sent:
     // it's only ever changed through the folder dialog.
-    await mutate(() => api('PUT', '/api/playlists/' + id, { name: plDraft.name, transition: plDraft.transition, music: plDraft.music, items: plDraft.items, loadedAt: plDraft._loadedAt }), 'Playlist saved — screens update within a few seconds');
+    await mutate(() => api('PUT', '/api/playlists/' + id, { name: plDraft.name, transition: plDraft.transition, playOnce: !!plDraft.playOnce, music: plDraft.music, items: plDraft.items, loadedAt: plDraft._loadedAt }), 'Playlist saved — screens update within a few seconds');
     plDraft = loadDraft(id);
     plDirty = false;
     render();
@@ -1628,7 +1634,7 @@ const ACTIONS = {
   },
   'pl-duplicate': async () => {
     if (plDirty) return toast('Save your changes first', 'error');
-    const p = await mutate(() => api('POST', '/api/playlists', { name: plDraft.name + ' (copy)', transition: plDraft.transition, music: plDraft.music, folder: plDraft.folder || null, items: plDraft.items.map((i) => ({ ...i, id: undefined })) }), 'Duplicated');
+    const p = await mutate(() => api('POST', '/api/playlists', { name: plDraft.name + ' (copy)', transition: plDraft.transition, playOnce: !!plDraft.playOnce, music: plDraft.music, folder: plDraft.folder || null, items: plDraft.items.map((i) => ({ ...i, id: undefined })) }), 'Duplicated');
     selectedPl = p.id; plDraft = null; render();
   },
   'pl-delete': async () => {

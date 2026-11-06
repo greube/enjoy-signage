@@ -1,6 +1,6 @@
 {
   "name": "enjoy-signage",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "description": "ENJOY Signage: self-hosted digital signage for churches: per-screen playlists, schedules and instant takeovers. No dependencies.",
   "main": "server/server.js",
   "scripts": { "start": "node server/server.js" },

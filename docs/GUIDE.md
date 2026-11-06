@@ -104,6 +104,15 @@ Schedule tips:
 - The same start and end time means all day.
 - For a one-off event, set both dates to the same day.
 
+**Play once:** for a playlist that should run through a single time at a set moment (a welcome video at 9:30, a countdown then a sermon intro), set the playlist's **At the end** to **Play once**. Then schedule it, or use it for a takeover.
+
+- When the schedule's window starts, each of its screens plays the playlist through once. A single video plays to the end instead of looping. The screen then goes back to what it would otherwise show: a lower-priority schedule, or its default playlist.
+- Make the schedule's window at least as long as the playlist, e.g. 9:30 → 10:00 for a 5-minute video. If the window closes first, the playlist stops there as usual.
+- It plays once per window, so a schedule that repeats every Sunday plays it once every Sunday. Restarting or updating the server doesn't make it play again. Changing the schedule's start time does, which is handy for a rehearsal.
+- A takeover with a play-once playlist plays once on each screen and then steps aside, even if the takeover itself runs longer.
+- Used as a screen's default playlist, a play-once playlist still loops.
+- The Screens page shows when a screen has finished one, e.g. *"Christmas Eve" has played once*.
+
 **Video format:** MP4 with H.264 video and AAC audio plays everywhere. Keep files at 1080p unless your TVs are 4K. HEVC/H.265 and `.mov` files may not play in every browser.
 
 **Web pages:** some sites refuse to be shown inside another page. Published Google Slides, Canva "public view" links, YouTube and most church-calendar embeds work fine. Use *Preview* to check.

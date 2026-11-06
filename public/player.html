@@ -76,6 +76,8 @@
   };
 
   let state = null, hash = null, boot = null, idx = -1, timer = null, token = 0;
+  let pollTimer = null, polling = false, pollSoon = false;
+  let playedKey = ''; // a play-once playlist we've finished, until the server has moved this screen on
   let current = null, serverOffset = 0, lastError = '', countdownTimers = [];
   let musicHold = false; // true while showing an item that should pause the background music (Spotify)
   const now = () => new Date(Date.now() + serverOffset);
@@ -121,10 +123,13 @@
 
   /* ---------- Talking to the server ---------- */
   async function poll() {
+    if (polling) { pollSoon = true; return; } // one at a time; run again straight after
+    polling = true;
+    clearTimeout(pollTimer);
     try {
       const url = previewId
         ? `/api/preview/${encodeURIComponent(previewId)}/state`
-        : `/api/player/${encodeURIComponent(screenId)}/state?item=${encodeURIComponent(current ? current.name : '')}&res=${innerWidth}x${innerHeight}&music=${musicHold ? 1 : 0}${lastError ? '&err=' + encodeURIComponent(lastError) : ''}`;
+        : `/api/player/${encodeURIComponent(screenId)}/state?item=${encodeURIComponent(current ? current.name : '')}&res=${innerWidth}x${innerHeight}&music=${musicHold ? 1 : 0}${lastError ? '&err=' + encodeURIComponent(lastError) : ''}${playedKey ? '&played=' + encodeURIComponent(playedKey) : ''}`;
       const r = await fetch(url, { cache: 'no-store' });
       if (r.status === 404) {
         if (!previewId) { store.set(null); location.replace('/player?pick'); return; }
@@ -140,14 +145,17 @@
       applyRotation(s.screen.rotation);
       showIdentify(s.identify, s.screen.name);
       setLogo(document.getElementById('idle-logo'), s.logo);
+      if (playedKey && s.onceKey !== playedKey) playedKey = ''; // the server has recorded it (or moved on anyway)
       if (s.hash !== hash) {
-        const prevCount = state && state.playlistId === s.playlistId ? state.items.length : 0; // a different playlist always starts fresh
+        const prevCount = state && state.playlistId === s.playlistId && state.onceKey === s.onceKey ? state.items.length : 0; // a different playlist (or a new play-once showing) always starts fresh
         hash = s.hash; state = s; startPlaylist(prevCount);
       }
     } catch (e) {
       setOnline(false); // keep playing whatever we have
     } finally {
-      setTimeout(poll, previewId ? 3000 : 5000);
+      polling = false;
+      pollTimer = setTimeout(poll, pollSoon ? 0 : previewId ? 3000 : 5000);
+      pollSoon = false;
     }
   }
 
@@ -201,7 +209,10 @@
     clearTimeout(timer);
     const items = state.items;
     if (!items.length) return showIdle();
-    if (items.length === 1 && current && current.key === items[0].key) return; // single item just stays (videos loop)
+    if (state.playOnce) {
+      // Played through once: tell the server now, and keep the last item on screen until it sends what's next.
+      if (idx >= items.length - 1) { if (playedKey !== state.onceKey) { playedKey = state.onceKey; poll(); } return; }
+    } else if (items.length === 1 && current && current.key === items[0].key) return; // single item just stays (videos loop)
     idx = (idx + 1) % items.length;
     show(items[idx]);
   }
@@ -214,7 +225,7 @@
 
   function show(item) {
     const my = ++token;
-    const single = state.items.length === 1;
+    const single = state.items.length === 1 && !state.playOnce; // a lone item loops, unless it's to play once
     const layer = document.createElement('div');
     layer.className = 'layer' + (state.transition === 'none' ? ' cut' : '') + (item.fit === 'cover' ? ' cover' : '');
     let revealed = false;
@@ -252,7 +263,7 @@
       if (my !== token) return;
       lastError = `${item.name}: ${why}`;
       layer.remove();
-      timer = setTimeout(next, state.items.length > 1 ? 500 : 10000);
+      timer = setTimeout(next, state.items.length > 1 || state.playOnce ? 500 : 10000);
     };
 
     const loadGuard = setTimeout(() => { if (!revealed) (item.type === 'web' ? ready() : fail('took too long to load')); }, item.type === 'web' ? 5000 : 20000);
