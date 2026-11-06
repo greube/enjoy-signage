@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ENJOY Signage Player</title>
+<link rel="icon" type="image/png" href="/static/brand/icon-32.png">
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; color: #fff;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  body.playing { cursor: none; }
+  #stage { position: absolute; inset: 0; overflow: hidden; background: #000; }
+  #stage.r90, #stage.r270 { inset: auto; top: 50%; left: 50%; width: 100vh; height: 100vw; }
+  #stage.r90  { transform: translate(-50%, -50%) rotate(90deg); }
+  #stage.r270 { transform: translate(-50%, -50%) rotate(270deg); }
+  #stage.r180 { transform: rotate(180deg); }
+
+  .layer { position: absolute; inset: 0; opacity: 0; transition: opacity .8s ease; background: #000; }
+  .layer.show { opacity: 1; }
+  .layer.cut { transition: none; }
+  .layer img, .layer video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .layer.cover img, .layer.cover video { object-fit: cover; }
+  .layer iframe { width: 100%; height: 100%; border: 0; background: #fff; display: block; }
+
+  .slide { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background-size: cover; background-position: center; }
+  .slide.has-img::before { content: ""; position: absolute; inset: 0; background: rgba(0,0,0,.45); }
+  .slide-inner { position: relative; max-width: 86%; text-align: center; }
+  .slide.left .slide-inner { text-align: left; width: 86%; }
+  .slide h1 { font-size: 8vmin; line-height: 1.08; margin: 0 0 .35em; font-weight: 750; letter-spacing: -.01em; }
+  .slide p  { font-size: 4.2vmin; line-height: 1.4; margin: 0; white-space: pre-line; opacity: .92; }
+  .slide .count { font-size: 22vmin; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; letter-spacing: -.02em; }
+  .slide .count.small { font-size: 9vmin; }
+
+  .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; text-align: center; z-index: 10; }
+  #idle { color: rgba(255,255,255,.28); font-size: 2.4vmin; gap: .6em; }
+  #idle img { max-width: 46vmin; max-height: 14vmin; object-fit: contain; opacity: .8; margin-bottom: 3vmin; }
+  #picker .logo { max-height: 56px; max-width: 360px; object-fit: contain; display: block; margin-bottom: 30px; }
+  #picker .brand { color: #8d99b0; font-size: 14px; letter-spacing: .04em; margin: 28px 0 0; }
+  #picker .brand b { letter-spacing: .1em; }
+  #idle b { font-size: 3.4vmin; color: rgba(255,255,255,.45); font-weight: 600; }
+  #identify { background: rgba(20, 60, 160, .92); font-size: 12vmin; font-weight: 800; display: none; z-index: 20; }
+  #identify small { font-size: 3vmin; font-weight: 500; opacity: .8; margin-top: 1em; }
+  #status { position: fixed; right: 1.2vmin; bottom: 1.2vmin; width: 1.2vmin; height: 1.2vmin; border-radius: 50%;
+    background: #e5484d; z-index: 30; display: none; box-shadow: 0 0 0 .3vmin rgba(0,0,0,.5); }
+
+  #picker { position: fixed; inset: 0; background: #0e1420; display: none; overflow: auto; z-index: 40; cursor: auto; }
+  #picker .wrap { max-width: 720px; margin: 8vh auto; padding: 0 24px; }
+  #picker h1 { font-size: 30px; margin: 0 0 6px; }
+  #picker p { color: #9aa6bd; margin: 0 0 28px; font-size: 17px; }
+  #picker button { display: block; width: 100%; text-align: left; background: #1a2333; color: #fff; border: 2px solid #26324a;
+    border-radius: 12px; padding: 18px 22px; font-size: 21px; margin-bottom: 12px; cursor: pointer; font-family: inherit; }
+  #picker button:hover, #picker button:focus { border-color: #5b8cff; outline: none; background: #1f2b40; }
+  #picker button span { display: block; font-size: 15px; color: #8d99b0; margin-top: 3px; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="idle" class="overlay" style="display:none"><img id="idle-logo" alt="" hidden><b id="idle-name"></b><span id="idle-msg">Nothing scheduled</span></div>
+<div id="identify" class="overlay"><div id="identify-name"></div><small>This screen is being identified from the admin panel</small></div>
+<div id="status" title="Lost connection to the signage server — still playing the last content"></div>
+<div id="picker"><div class="wrap"><img class="logo" id="picker-logo" alt="" hidden><h1>Which screen is this?</h1><p>Choose once — this device will remember it. To change later, open <b>/player?pick</b>.</p><div id="picker-list"></div></div></div>
+
+<script>
+(() => {
+  'use strict';
+  const stage = document.getElementById('stage');
+  const params = new URLSearchParams(location.search);
+  const previewId = params.get('playlist');
+  let screenId = decodeURIComponent(location.pathname.split('/')[2] || '');
+  const KEY = 'signage.screenId';
+  const store = {
+    get: () => { try { return localStorage.getItem(KEY); } catch { return null; } },
+    set: (v) => { try { v ? localStorage.setItem(KEY, v) : localStorage.removeItem(KEY); } catch {} },
+  };
+
+  let state = null, hash = null, boot = null, idx = -1, timer = null, token = 0;
+  let current = null, serverOffset = 0, lastError = '', countdownTimers = [];
+  let musicHold = false; // true while showing an item that should pause the background music (Spotify)
+  const now = () => new Date(Date.now() + serverOffset);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  /** Show the church logo (uploaded in Setup → Branding) in an <img>, or hide it if there isn't one. */
+  function setLogo(img, url) {
+    if (!url) { img.hidden = true; img.removeAttribute('src'); return; }
+    if (img.getAttribute('src') !== url) { img.onerror = () => { img.hidden = true; }; img.src = url; }
+    img.hidden = false;
+  }
+
+  /* ---------- First run: pick a screen ---------- */
+  async function showPicker() {
+    document.getElementById('picker').style.display = 'block';
+    const list = document.getElementById('picker-list');
+    try {
+      const resp = await fetch('/api/player-list', { cache: 'no-store' });
+      const screens = await resp.json();
+      setLogo(document.getElementById('picker-logo'), resp.headers.get('X-Logo'));
+      if (!screens.length) {
+        list.innerHTML = '<p>No screens have been set up yet. Add one in the admin panel, then refresh this page.</p>';
+        setTimeout(showPicker, 10000);
+        return;
+      }
+      list.innerHTML = screens.map((s) => `<button data-id="${esc(s.id)}">${esc(s.name)}${s.location ? `<span>${esc(s.location)}</span>` : ''}</button>`).join('');
+      list.querySelectorAll('button').forEach((b) => b.onclick = () => { store.set(b.dataset.id); location.replace('/player/' + encodeURIComponent(b.dataset.id)); });
+      list.querySelector('button').focus();
+    } catch {
+      list.innerHTML = '<p>Can’t reach the signage server. Retrying…</p>';
+      setTimeout(showPicker, 5000);
+    }
+  }
+
+  if (!previewId && (params.has('pick') || !screenId)) {
+    const saved = store.get();
+    if (saved && !params.has('pick')) { location.replace('/player/' + encodeURIComponent(saved)); return; }
+    showPicker();
+    return;
+  }
+  if (screenId) store.set(screenId);
+  document.body.classList.add('playing');
+
+  /* ---------- Talking to the server ---------- */
+  async function poll() {
+    try {
+      const url = previewId
+        ? `/api/preview/${encodeURIComponent(previewId)}/state`
+        : `/api/player/${encodeURIComponent(screenId)}/state?item=${encodeURIComponent(current ? current.name : '')}&res=${innerWidth}x${innerHeight}&music=${musicHold ? 1 : 0}${lastError ? '&err=' + encodeURIComponent(lastError) : ''}`;
+      const r = await fetch(url, { cache: 'no-store' });
+      if (r.status === 404) {
+        if (!previewId) { store.set(null); location.replace('/player?pick'); return; }
+        showIdle('Playlist not found');
+        return;
+      }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const s = await r.json();
+      setOnline(true);
+      if (boot && s.boot !== boot) { location.reload(); return; } // server restarted (maybe updated) → reload player
+      boot = s.boot;
+      serverOffset = s.serverNow - Date.now();
+      applyRotation(s.screen.rotation);
+      showIdentify(s.identify, s.screen.name);
+      setLogo(document.getElementById('idle-logo'), s.logo);
+      if (s.hash !== hash) {
+        const prevCount = state && state.playlistId === s.playlistId ? state.items.length : 0; // a different playlist always starts fresh
+        hash = s.hash; state = s; startPlaylist(prevCount);
+      }
+    } catch (e) {
+      setOnline(false); // keep playing whatever we have
+    } finally {
+      setTimeout(poll, previewId ? 3000 : 5000);
+    }
+  }
+
+  /* Tell the server straight away when background music should pause or come back (the 5s poll also renews it). */
+  function setMusicHold(on, name) {
+    if (previewId || on === musicHold) return;
+    musicHold = on;
+    fetch(`/api/player/${encodeURIComponent(screenId)}/music?hold=${on ? 1 : 0}&item=${encodeURIComponent(name || '')}`, { method: 'POST', cache: 'no-store' }).catch(() => {});
+  }
+
+  function setOnline(ok) { document.getElementById('status').style.display = ok ? 'none' : 'block'; }
+
+  function applyRotation(deg) {
+    stage.className = deg ? 'r' + deg : '';
+  }
+
+  function showIdentify(on, name) {
+    const el = document.getElementById('identify');
+    document.getElementById('identify-name').textContent = name;
+    el.style.display = on ? 'flex' : 'none';
+  }
+
+  function showIdle(msg) {
+    clearTimeout(timer);
+    token++;
+    current = null;
+    setMusicHold(false);
+    [...stage.children].forEach(retire);
+    document.getElementById('idle-name').textContent = state && state.screen ? state.screen.name : '';
+    document.getElementById('idle-msg').textContent = msg || 'Nothing scheduled';
+    document.getElementById('idle').style.display = 'flex';
+  }
+
+  /* ---------- Playback ---------- */
+  function startPlaylist(prevCount) {
+    if (!state.items.length) { clearTimeout(timer); idx = -1; return showIdle(); }
+    document.getElementById('idle').style.display = 'none';
+    // Content changed (e.g. a file was dropped into a folder): if what's on screen is still in the
+    // playlist, let it finish and carry on from there instead of jumping back to the start.
+    if (current && prevCount > 1 && state.items.length > 1) {
+      const k = state.items.findIndex((i) => i.key === current.key);
+      if (k >= 0) { idx = k; return; }
+    }
+    clearTimeout(timer);
+    idx = -1;
+    current = null;
+    next();
+  }
+
+  function next() {
+    clearTimeout(timer);
+    const items = state.items;
+    if (!items.length) return showIdle();
+    if (items.length === 1 && current && current.key === items[0].key) return; // single item just stays (videos loop)
+    idx = (idx + 1) % items.length;
+    show(items[idx]);
+  }
+
+  function retire(layer) {
+    layer.classList.remove('show');
+    layer.querySelectorAll('video').forEach((v) => { try { v.pause(); v.removeAttribute('src'); v.load(); } catch {} });
+    setTimeout(() => layer.remove(), 900);
+  }
+
+  function show(item) {
+    const my = ++token;
+    const single = state.items.length === 1;
+    const layer = document.createElement('div');
+    layer.className = 'layer' + (state.transition === 'none' ? ' cut' : '') + (item.fit === 'cover' ? ' cover' : '');
+    let revealed = false;
+    let el;
+
+    const ready = () => {
+      if (my !== token || revealed) return;
+      revealed = true;
+      clearTimeout(loadGuard);
+      const old = [...stage.children].filter((c) => c !== layer);
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        layer.classList.add('show');
+        setTimeout(() => old.forEach(retire), state.transition === 'none' ? 0 : 850);
+      }));
+      current = item;
+      lastError = '';
+      setMusicHold(!!item.pauseMusic, item.name);
+      if (item.type === 'video') {
+        if (item.pauseMusic && !el.muted) {
+          // Fade the video's sound in while the background music fades out.
+          el.volume = 0;
+          const t0 = performance.now();
+          const ramp = () => { if (my !== token) return; const k = Math.min(1, (performance.now() - t0) / 1500); el.volume = k; if (k < 1) requestAnimationFrame(ramp); };
+          requestAnimationFrame(ramp);
+        }
+        const p = el.play();
+        if (p && p.catch) p.catch(() => { el.muted = true; el.play().catch(() => {}); });
+      }
+      if (single) return;
+      if (item.type === 'video' && !item.duration) return; // advance on 'ended'
+      timer = setTimeout(next, Math.max(1, item.duration || 10) * 1000);
+    };
+
+    const fail = (why) => {
+      if (my !== token) return;
+      lastError = `${item.name}: ${why}`;
+      layer.remove();
+      timer = setTimeout(next, state.items.length > 1 ? 500 : 10000);
+    };
+
+    const loadGuard = setTimeout(() => { if (!revealed) (item.type === 'web' ? ready() : fail('took too long to load')); }, item.type === 'web' ? 5000 : 20000);
+
+    switch (item.type) {
+      case 'image':
+        el = new Image();
+        el.decoding = 'async';
+        el.onload = ready;
+        el.onerror = () => fail('image failed to load');
+        el.src = item.url;
+        break;
+      case 'video':
+        el = document.createElement('video');
+        el.muted = !!item.muted;
+        el.playsInline = true;
+        el.setAttribute('playsinline', '');
+        el.preload = 'auto';
+        if (single) el.loop = true;
+        el.addEventListener('canplay', ready, { once: true });
+        el.onerror = () => fail('video failed to play (check the format is MP4/H.264 or WebM)');
+        el.onended = () => { if (my === token) next(); };
+        el.src = item.url;
+        break;
+      case 'web':
+        el = document.createElement('iframe');
+        el.allow = 'autoplay; fullscreen; encrypted-media';
+        el.referrerPolicy = 'no-referrer-when-downgrade';
+        el.onload = ready;
+        el.src = item.url;
+        break;
+      case 'text':
+      case 'countdown':
+        el = slide(item);
+        setTimeout(ready, 30);
+        break;
+      default:
+        fail('unknown type');
+        return;
+    }
+    layer.appendChild(el);
+    stage.appendChild(layer);
+  }
+
+  function slide(item) {
+    const d = document.createElement('div');
+    d.className = 'slide' + (item.align === 'left' ? ' left' : '') + (item.bgImage ? ' has-img' : '');
+    d.style.background = item.bg;
+    d.style.color = item.fg;
+    if (item.bgImage) { d.style.backgroundImage = `url("${item.bgImage}")`; d.style.backgroundSize = 'cover'; d.style.backgroundPosition = 'center'; }
+    if (item.type === 'text') {
+      d.innerHTML = `<div class="slide-inner">${item.title ? `<h1>${esc(item.title)}</h1>` : ''}${item.body ? `<p>${esc(item.body)}</p>` : ''}</div>`;
+    } else {
+      d.innerHTML = `<div class="slide-inner">${item.title ? `<h1>${esc(item.title)}</h1>` : ''}<div class="count"></div>${item.body ? `<p>${esc(item.body)}</p>` : ''}</div>`;
+      const c = d.querySelector('.count');
+      const tick = () => {
+        if (!d.isConnected && d._started) return clearInterval(iv);
+        d._started = true;
+        const n = now();
+        const [h, m] = (item.target || '10:00').split(':').map(Number);
+        const t = new Date(n); t.setHours(h, m, 0, 0);
+        const secs = Math.ceil((t - n) / 1000);
+        if (secs > 0) {
+          const hh = Math.floor(secs / 3600), mm = Math.floor((secs % 3600) / 60), ss = secs % 60;
+          c.textContent = (hh ? hh + ':' + String(mm).padStart(2, '0') : mm) + ':' + String(ss).padStart(2, '0');
+          c.classList.remove('small');
+        } else {
+          c.textContent = item.after || '';
+          c.classList.add('small');
+        }
+      };
+      tick();
+      const iv = setInterval(tick, 250);
+    }
+    return d;
+  }
+
+  /* ---------- Keep the screen awake ---------- */
+  async function wake() { try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch {} }
+  document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && wake());
+  document.addEventListener('contextmenu', (e) => e.preventDefault());
+  wake();
+
+  // Safety net: a full reload once a day at ~3am clears any browser memory build-up.
+  setInterval(() => { const n = new Date(); if (n.getHours() === 3 && n.getMinutes() === 0 && performance.now() > 3600000) location.reload(); }, 30000);
+
+  poll();
+})();
+</script>
+</body>
+</html>

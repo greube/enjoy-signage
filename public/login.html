@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · ENJOY Signage</title>
+<link rel="icon" type="image/png" href="/static/brand/icon-32.png">
+<link rel="apple-touch-icon" href="/static/brand/icon-192.png">
+<style>
+  :root { --bg: #0f131c; --panel: #171d29; --line: #283043; --ink: #e8ebf2; --muted: #8590a5; --accent: #3b5bdb; --danger: #ff6b6f; --ok: #4cc28a; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body { background: radial-gradient(1200px 600px at 50% -10%, #1b2440 0%, var(--bg) 60%); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; display: flex; align-items: center; justify-content: center; padding: 32px 16px; min-height: 100vh; }
+  .wrap { width: 100%; max-width: 380px; }
+  .logo { display: block; width: 260px; max-width: 80%; margin: 0 auto 30px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 26px 24px 22px; box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+  h1 { font-size: 19px; margin: 0 0 4px; font-weight: 680; }
+  .sub { color: var(--muted); font-size: 13.5px; margin: 0 0 18px; }
+  label { display: block; font-size: 13px; font-weight: 620; color: #b5bdcc; margin: 0 0 6px; }
+  input { width: 100%; font: inherit; color: var(--ink); background: #0f141e; border: 1px solid var(--line); border-radius: 9px; padding: 11px 12px; margin-bottom: 14px; }
+  input:focus { outline: 2px solid rgba(109,139,255,.35); border-color: #6d8bff; }
+  button { width: 100%; font: inherit; font-weight: 650; color: #fff; background: var(--accent); border: 0; border-radius: 9px; padding: 11px; cursor: pointer; margin-top: 4px; }
+  button:hover { filter: brightness(1.08); }
+  button:disabled { opacity: .5; cursor: not-allowed; filter: none; }
+  .msg { min-height: 20px; font-size: 13.5px; margin-top: 12px; color: var(--danger); text-align: center; }
+  .msg.info { color: var(--muted); }
+  .foot { text-align: center; color: var(--muted); font-size: 12.5px; margin-top: 18px; }
+  .hidden { display: none !important; }
+  code { background: #0f141e; border: 1px solid var(--line); padding: 1px 6px; border-radius: 5px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <img class="logo" src="/static/brand/wordmark.png" alt="ENJOY Signage">
+
+  <form class="card" id="login" novalidate>
+    <h1>Sign in</h1>
+    <p class="sub">Use the account your administrator gave you.</p>
+    <label for="u">Username</label>
+    <input id="u" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+    <label for="p">Password</label>
+    <input id="p" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit">Sign in</button>
+    <div class="msg" id="login-msg" role="alert" aria-live="polite"></div>
+  </form>
+
+  <form class="card hidden" id="setup" novalidate>
+    <h1>Welcome to ENJOY Signage</h1>
+    <p class="sub">Create the first administrator account. You’ll need the <b>setup code</b> shown in the server window (also saved in <code>data/setup-code.txt</code> on the server).</p>
+    <label for="sc">Setup code</label>
+    <input id="sc" name="code" inputmode="numeric" autocomplete="one-time-code" required>
+    <label for="sn">Your name</label>
+    <input id="sn" name="name" autocomplete="name">
+    <label for="su">Username</label>
+    <input id="su" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="e.g. greuben" required>
+    <label for="sp">Password <span style="font-weight:400;color:var(--muted)">(at least 8 characters)</span></label>
+    <input id="sp" name="password" type="password" autocomplete="new-password" required>
+    <label for="sp2">Password again</label>
+    <input id="sp2" name="password2" type="password" autocomplete="new-password" required>
+    <button type="submit">Create administrator</button>
+    <div class="msg" id="setup-msg" role="alert" aria-live="polite"></div>
+  </form>
+
+  <p class="foot">TVs never need to sign in.</p>
+</div>
+<script>
+(() => {
+  'use strict';
+  const $ = (s) => document.querySelector(s);
+  let countdown;
+
+  async function post(url, body) {
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Signage': '1' }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw Object.assign(new Error(j.error || 'Something went wrong'), { status: r.status, retryAfter: j.retryAfter });
+    return j;
+  }
+
+  /** After 5 wrong attempts the server refuses sign-in for 30 seconds: show the countdown and wait. */
+  function lockedOut(form, msgEl, seconds) {
+    const btn = form.querySelector('button');
+    clearInterval(countdown);
+    let left = seconds;
+    const tick = () => {
+      if (left <= 0) { clearInterval(countdown); btn.disabled = false; msgEl.className = 'msg info'; msgEl.textContent = 'You can try again now.'; return; }
+      btn.disabled = true;
+      msgEl.className = 'msg';
+      msgEl.textContent = `Too many wrong attempts. Try again in ${left} second${left === 1 ? '' : 's'}.`;
+      left--;
+    };
+    tick();
+    countdown = setInterval(tick, 1000);
+  }
+
+  function handle(form, msgEl, e) {
+    if (e.status === 429) return lockedOut(form, msgEl, e.retryAfter || 30);
+    msgEl.className = 'msg';
+    msgEl.textContent = e.message;
+  }
+
+  $('#login').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const f = ev.target, msg = $('#login-msg');
+    if (!f.username.value.trim() || !f.password.value) { msg.textContent = 'Enter your username and password'; return; }
+    f.querySelector('button').disabled = true;
+    msg.className = 'msg info'; msg.textContent = 'Signing in…';
+    try {
+      await post('/api/login', { username: f.username.value, password: f.password.value });
+      location.replace('/');
+    } catch (e) {
+      f.querySelector('button').disabled = false;
+      f.password.value = '';
+      handle(f, msg, e);
+      f.password.focus();
+    }
+  });
+
+  $('#setup').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const f = ev.target, msg = $('#setup-msg');
+    if (f.password.value !== f.password2.value) { msg.textContent = 'The two passwords don’t match'; return; }
+    f.querySelector('button').disabled = true;
+    try {
+      await post('/api/setup', { code: f.code.value, name: f.name.value, username: f.username.value, password: f.password.value });
+      location.replace('/');
+    } catch (e) {
+      f.querySelector('button').disabled = false;
+      handle(f, msg, e);
+    }
+  });
+
+  fetch('/api/auth/status', { cache: 'no-store' }).then((r) => r.json()).then((s) => {
+    if (s.user) return location.replace('/');
+    // The Windows desktop icon passes the setup code in the #fragment (never sent to the server), so it's filled in for you.
+    const given = /^#setup=(\d{6})$/.exec(location.hash);
+    if (location.hash) history.replaceState(null, '', location.pathname);
+    if (s.needsSetup) {
+      $('#login').classList.add('hidden'); $('#setup').classList.remove('hidden');
+      if (given) { $('#sc').value = given[1]; $('#setup').elements.name.focus(); } else $('#sc').focus();
+    } else $('#u').focus();
+  }).catch(() => { $('#login-msg').textContent = 'Can’t reach the signage server.'; });
+})();
+</script>
+</body>
+</html>
