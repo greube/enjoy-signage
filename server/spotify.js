@@ -45,6 +45,7 @@ function createSpotify({ dataDir, log = console, getSchedules = () => [], isActi
     fadeSeconds: 2,
     resumeDelaySeconds: 3,
     engaged: null, // what we changed, so it can be undone (persisted across restarts)
+    resuming: null, // music we paused for a video and are still trying to start again (persisted too)
   };
   let cfg = { ...DEFAULTS };
   try {
@@ -181,6 +182,16 @@ function createSpotify({ dataDir, log = console, getSchedules = () => [], isActi
 
   async function engage() {
     if (cfg.engaged) return;
+    if (cfg.resuming) {
+      // Another video started while we were still trying to get the music going again after the last one.
+      // Keep owing that music: it gets resumed after this video instead.
+      const owed = cfg.resuming;
+      stopResuming();
+      cfg.engaged = { ...owed, at: Date.now() };
+      save();
+      lastAction = `Video started; the music on ${owed.deviceName} will resume after it`;
+      return;
+    }
     const s = await playerState();
     if (!s || !s.is_playing || !s.device) {
       // Nothing playing: remember that we looked, so we don't start music that was never on.
@@ -242,16 +253,116 @@ function createSpotify({ dataDir, log = console, getSchedules = () => [], isActi
         lastAction = 'Music was already resumed by hand';
         return;
       }
-      await api('PUT', '/me/player/play' + dev(e.deviceId));
-      if (e.volume != null) await fade(e.setVolume ?? e.volume, e.volume, e.deviceId).catch(() => {});
-      lastAction = `Resumed music on ${e.deviceName}`;
-      setTimeout(scheduleTick, 1500).unref(); // a music schedule may have started or ended during the video
+      startResuming(e);
     } else if (e.volume != null && volUntouched) {
       await fade(e.setVolume ?? e.volume, e.volume, e.deviceId);
       lastAction = `Turned music back up on ${e.deviceName}`;
     } else {
       lastAction = 'Volume was changed by hand meanwhile; left it alone';
     }
+  }
+
+  /* ---------------- Resuming, stubbornly ---------------- */
+  //
+  // Some devices (notably Spotify on an iPhone or iPad) drop off Spotify's device list or go "inactive" soon
+  // after being paused, so a single "play" after the video can fail. Keep trying for a few minutes, in more
+  // than one way, and stop as soon as it's playing, someone takes charge, or another video starts.
+
+  const RESUME_RETRY_SECONDS = [3, 6, 10, 15, 30, 60, 90]; // gaps between attempts after the first (≈ 3½ minutes)
+  let resumeTimer = null;
+
+  function startResuming(e) {
+    cfg.resuming = { ...e, attempt: 0, since: Date.now() };
+    save();
+    resumeAttempt();
+  }
+
+  function stopResuming() {
+    clearTimeout(resumeTimer);
+    resumeTimer = null;
+    if (cfg.resuming) { cfg.resuming = null; save(); }
+  }
+
+  function resumeAttempt() {
+    clearTimeout(resumeTimer);
+    resumeTimer = null;
+    serial(async () => {
+      const r = cfg.resuming;
+      if (!r || cfg.engaged || !connected()) return; // stopped, or a new video took over (it carries the music on)
+      r.attempt = (r.attempt || 0) + 1;
+      let outcome;
+      try { outcome = await tryResume(r); } catch (err) { outcome = 'retry'; r.lastProblem = err.message; }
+      if (cfg.resuming !== r) return; // something else took over meanwhile
+      if (outcome === 'retry' && r.attempt <= RESUME_RETRY_SECONDS.length) {
+        save();
+        lastAction = `Trying to resume the music on ${r.deviceName} (attempt ${r.attempt} didn’t work; trying again in ${RESUME_RETRY_SECONDS[r.attempt - 1]} s)…`;
+        resumeTimer = setTimeout(resumeAttempt, RESUME_RETRY_SECONDS[r.attempt - 1] * 1000);
+        resumeTimer.unref();
+        return;
+      }
+      stopResuming();
+      if (outcome === 'retry') {
+        lastAction = `Couldn’t resume the music on ${r.deviceName}`;
+        lastError = `Couldn’t start the music again on ${r.deviceName} after the video: Spotify on it seems to have gone to sleep or closed${r.lastProblem ? ` (${r.lastProblem})` : ''}. Press play on ${r.deviceName}. On an iPhone or iPad, keeping Spotify open on screen with Auto-Lock off stops this.`;
+        log.error('Spotify: ' + lastError);
+      }
+    });
+  }
+
+  /** One attempt. Resolves 'done' (playing, or no longer needed) or 'retry'. */
+  async function tryResume(r) {
+    const s = await playerState().catch(() => null);
+    if (s && s.is_playing) {
+      // Playing again: by a person, a schedule, or our previous attempt landing late. Put the volume back if it's ours.
+      if (s.device && s.device.id === r.deviceId && r.volume != null && r.setVolume != null && Math.abs((s.device.volume_percent ?? -99) - r.setVolume) <= 2) {
+        await fade(r.setVolume, r.volume, r.deviceId).catch(() => {});
+      }
+      lastAction = s.device && s.device.id === r.deviceId ? `Resumed music on ${r.deviceName}` : 'Music is playing again';
+      lastError = '';
+      return 'done';
+    }
+    if (scheduleChangePending()) {
+      lastAction = 'Video finished; switching to the scheduled music';
+      setTimeout(scheduleTick, 300).unref();
+      return 'done';
+    }
+    let problem = '';
+    // 1. Ask the device we paused to play.
+    try { await api('PUT', '/me/player/play' + dev(r.deviceId)); } catch (err) { problem = err.message; }
+    if (!problem && (await nowPlayingOn(r))) return resumed(r);
+    // 2. Find it again (its id can change when the app restarts) and move playback to it, which can wake an inactive device.
+    const list = await devices().catch(() => []);
+    const d = list.find((x) => x.id === r.deviceId) || list.find((x) => r.deviceName && x.name.toLowerCase() === String(r.deviceName).toLowerCase());
+    if (d) {
+      r.deviceId = d.id;
+      try { await api('PUT', '/me/player', { device_ids: [d.id], play: true }); } catch (err) { problem = err.message; }
+      if (await nowPlayingOn(r)) return resumed(r);
+      try { await api('PUT', '/me/player/play' + dev(d.id)); } catch (err) { problem = err.message; }
+      if (await nowPlayingOn(r)) return resumed(r);
+    } else {
+      problem = `${r.deviceName} isn’t in Spotify’s device list`;
+    }
+    r.lastProblem = problem;
+    return 'retry';
+  }
+
+  /** Spotify's state lags a moment behind a play request, so check twice. */
+  async function nowPlayingOn(r) {
+    for (const wait of [1200, 2000]) {
+      await sleep(wait);
+      const s = await playerState().catch(() => null);
+      if (s && s.is_playing) return true;
+    }
+    return false;
+  }
+
+  async function resumed(r) {
+    if (r.volume != null) await fade(r.setVolume ?? r.volume, r.volume, r.deviceId).catch(() => {});
+    lastAction = r.attempt > 1 ? `Resumed music on ${r.deviceName} (on attempt ${r.attempt})` : `Resumed music on ${r.deviceName}`;
+    lastError = '';
+    statusAt = 0;
+    setTimeout(scheduleTick, 1500).unref(); // a music schedule may have started or ended during the video
+    return 'done';
   }
 
   /* ---------------- Holds ---------------- */
@@ -290,6 +401,7 @@ function createSpotify({ dataDir, log = console, getSchedules = () => [], isActi
   // Expire stale holds, and undo a change left over from before a restart once players have had time to check in.
   setInterval(evaluate, 5000).unref();
   if (cfg.engaged) setTimeout(evaluate, HOLD_MS).unref();
+  if (cfg.resuming) setTimeout(resumeAttempt, 5000).unref(); // was still trying to resume when the server stopped
 
   /* ---------------- Admin ---------------- */
 
@@ -354,7 +466,8 @@ function createSpotify({ dataDir, log = console, getSchedules = () => [], isActi
   }
 
   function disconnect() {
-    Object.assign(cfg, { refreshToken: '', accessToken: '', expiresAt: 0, user: '', engaged: null });
+    clearTimeout(resumeTimer);
+    Object.assign(cfg, { refreshToken: '', accessToken: '', expiresAt: 0, user: '', engaged: null, resuming: null });
     status = null;
     lastError = '';
     lastAction = '';
@@ -372,7 +485,8 @@ function createSpotify({ dataDir, log = console, getSchedules = () => [], isActi
       await serial(release);
     } else if (action === 'play' || action === 'pause') {
       await serial(async () => {
-        if (cfg.engaged) { cfg.engaged = null; save(); } // a person took charge
+        stopResuming(); // a person took charge
+        if (cfg.engaged) { cfg.engaged = null; save(); }
         await api('PUT', `/me/player/${action}`);
         lastAction = action === 'play' ? 'Played from the admin panel' : 'Paused from the admin panel';
       });
@@ -495,6 +609,7 @@ function createSpotify({ dataDir, log = console, getSchedules = () => [], isActi
     if (!connected()) throw Object.assign(new Error('Spotify is not connected'), { status: 400 });
     let err = null;
     await serial(async () => {
+      stopResuming(); // a person chose what plays now
       try {
         if (action === 'play-uri') {
           const uri = parseUri(b.uri);
@@ -584,6 +699,7 @@ function createSpotify({ dataDir, log = console, getSchedules = () => [], isActi
   async function runSchedule(s) {
     let err = null;
     await serial(async () => {
+      stopResuming(); // a person chose what plays now
       try {
         const d = await playContext({ uri: s.uri, device: s.deviceName ? { id: s.deviceId, name: s.deviceName } : null, shuffle: s.shuffle === 'on' ? true : s.shuffle === 'off' ? false : null, volume: s.volume });
         lastAction = `Started ${s.playlistName || 'the playlist'} on ${d.name}`;

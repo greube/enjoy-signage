@@ -235,6 +235,7 @@ If you play background music from Spotify, the signage server can pause it while
 - **It's fail-safe.** Each TV renews its request every few seconds. If a TV is switched off mid-video, or the server restarts, the music comes back by itself within about 30 seconds.
 - The **Screens** page shows what's playing, which screen is holding the music, and play/pause/skip buttons, plus **Resume music now**.
 - Fades need a device whose volume Spotify can control. Some speakers don't allow it; on those, the music simply pauses and resumes.
+- **It keeps trying to resume.** Some devices, iPhones and iPads especially, drop out of Spotify soon after being paused. If the first try doesn't work, the server keeps trying for about 3½ minutes, so the music carries on by itself as soon as someone opens Spotify on the device again. If it still can't, the Music page says so and asks you to press play on that device. For a device that never drops out, play the music from the Spotify app on a computer, or keep Spotify open on screen on the iPad with Auto-Lock set to Never.
 
 The Spotify sign-in is stored in `data/spotify.json`. It isn't included in **Download backup**, so after restoring on a new computer you only need to click Connect again.
 
