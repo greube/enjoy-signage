@@ -87,6 +87,18 @@
   const now = () => new Date(serverMs());
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let pendingLength = ''; // a video length we measured, to send with the next check-in
+  // Every request has a time limit, so a connection that died silently (e.g. the server PC lost power)
+  // can't leave the player waiting for ever.
+  function fetchT(url, opts = {}, ms = 8000) {
+    if (!window.AbortController) return fetch(url, opts);
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), ms);
+    return fetch(url, Object.assign({}, opts, { signal: ac.signal })).finally(() => clearTimeout(t));
+  }
+  // Videos that got stuck loading are fetched from a fresh address (the same file with ?retry=…), which steps
+  // around anything the browser is still holding for the old one (it can survive a refresh).
+  const freshSrc = new Map(); // media URL → the address to use instead
+  const srcOf = (item) => freshSrc.get(item.url) || item.url;
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   /** Show the church logo (uploaded in Setup → Branding) in an <img>, or hide it if there isn't one. */
@@ -101,7 +113,7 @@
     document.getElementById('picker').style.display = 'block';
     const list = document.getElementById('picker-list');
     try {
-      const resp = await fetch('/api/player-list', { cache: 'no-store' });
+      const resp = await fetchT('/api/player-list', { cache: 'no-store' });
       const screens = await resp.json();
       setLogo(document.getElementById('picker-logo'), resp.headers.get('X-Logo'));
       if (!screens.length) {
@@ -136,7 +148,7 @@
       const url = previewId
         ? `/api/preview/${encodeURIComponent(previewId)}/state`
         : `/api/player/${encodeURIComponent(screenId)}/state?item=${encodeURIComponent(current ? current.name : '')}&res=${innerWidth}x${innerHeight}&music=${musicHold ? 1 : 0}${lastError ? '&err=' + encodeURIComponent(lastError) : ''}${playedKey ? '&played=' + encodeURIComponent(playedKey) : ''}${pendingLength ? '&len=' + encodeURIComponent(pendingLength) : ''}${synced ? `&sync=${Math.round(syncErr)}&rtt=${clock ? Math.round(clock.rtt) : ''}` : ''}`;
-      const r = await fetch(url, { cache: 'no-store' });
+      const r = await fetchT(url, { cache: 'no-store' });
       if (r.status === 404) {
         if (!previewId) { store.set(null); location.replace('/player?pick'); return; }
         showIdle('Playlist not found');
@@ -171,7 +183,7 @@
   function setMusicHold(on, name) {
     if (previewId || on === musicHold) return;
     musicHold = on;
-    fetch(`/api/player/${encodeURIComponent(screenId)}/music?hold=${on ? 1 : 0}&item=${encodeURIComponent(name || '')}`, { method: 'POST', cache: 'no-store' }).catch(() => {});
+    fetchT(`/api/player/${encodeURIComponent(screenId)}/music?hold=${on ? 1 : 0}&item=${encodeURIComponent(name || '')}`, { method: 'POST', cache: 'no-store' }).catch(() => {});
   }
 
   function setOnline(ok) { document.getElementById('status').style.display = ok ? 'none' : 'block'; }
@@ -274,7 +286,12 @@
       timer = setTimeout(next, state.items.length > 1 || state.playOnce ? 500 : 10000);
     };
 
-    const loadGuard = setTimeout(() => { if (!revealed) (item.type === 'web' ? ready() : fail('took too long to load')); }, item.type === 'web' ? 5000 : 20000);
+    const loadGuard = setTimeout(() => {
+      if (revealed) return;
+      if (item.type === 'web') return ready();
+      if (item.type === 'video') freshSrc.set(item.url, item.url + (item.url.includes('?') ? '&' : '?') + 'retry=' + Date.now().toString(36)); // next time, a fresh address
+      fail('took too long to load');
+    }, item.type === 'web' ? 5000 : 20000);
 
     switch (item.type) {
       case 'image':
@@ -295,7 +312,8 @@
         el.addEventListener('loadedmetadata', () => noteLength(item, el), { once: true });
         el.onerror = () => fail('video failed to play (check the format is MP4/H.264 or WebM)');
         el.onended = () => { if (my === token) next(); };
-        el.src = item.url;
+        el.__item = item;
+        el.src = srcOf(item);
         break;
       case 'web':
         el = document.createElement('iframe');
@@ -393,15 +411,17 @@
     const nl = locate(tl, nextAt + 1);
     const nItem = !nl.ended && itemFor(state, nl.step.key);
     if (nItem && !(nl.step.key === loc.step.key && nItem.type !== 'video')) {
-      sTimers.push(setTimeout(() => syncPrepare(nItem, nl.step, nl.at), Math.max(0, nextAt - PREP_MS - serverMs())));
+      sTimers.push(setTimeout(() => syncPrepare(nItem, nl.step, nl.at, true), Math.max(0, nextAt - PREP_MS - serverMs())));
     }
     sTimer = setTimeout(syncPlan, Math.max(0, nextAt - serverMs()));
   }
 
   /** Load an item ahead of time, hidden, ready to start at server time `at`. */
-  function syncPrepare(item, step, at) {
+  function syncPrepare(item, step, at, ahead = false) {
     const id = `${step.key}@${at}`;
-    if (prepared.has(id) || at < serverMs() - 1000) return prepared.get(id);
+    // Loading ahead for a step that's already over is pointless (a timer that fired late). Showing the step
+    // that's on now always goes ahead, even part-way through it (after a reload, or a TV switching on).
+    if (prepared.has(id) || (ahead && at < serverMs() - 1000)) return prepared.get(id);
     const layer = document.createElement('div');
     layer.className = 'layer' + (item.fit === 'cover' ? ' cover' : '');
     const p = { layer, item, ready: false, el: null };
@@ -414,8 +434,9 @@
         el.muted = !!item.muted; el.playsInline = true; el.setAttribute('playsinline', ''); el.preload = 'auto';
         el.addEventListener('loadeddata', done, { once: true });
         el.addEventListener('loadedmetadata', () => noteLength(item, el), { once: true });
-        el.onerror = () => { lastError = `${item.name}: video failed to play (check the format is MP4/H.264 or WebM)`; };
-        el.src = item.url;
+        el.onerror = () => { lastError = `${item.name}: video failed to play (check the format is MP4/H.264 or WebM)`; if (shown && shown.el === el) recoverVideo(el); };
+        el.__item = item;
+        el.src = srcOf(item);
         break;
       case 'web': el = document.createElement('iframe'); el.allow = 'autoplay; fullscreen; encrypted-media'; el.referrerPolicy = 'no-referrer-when-downgrade'; el.onload = done; el.src = item.url; setTimeout(done, 5000); break;
       case 'text': case 'countdown': el = slide(item); done(); break;
@@ -471,7 +492,20 @@
     if (p.ready) reveal();
     else {
       // Not loaded yet (a slow network, or this screen just joined): show it the moment it is, at the right point.
-      const iv = setInterval(() => { if (my !== token || !synced) return clearInterval(iv); if (p.ready) { clearInterval(iv); reveal(); } }, 30);
+      const t0 = Date.now();
+      const iv = setInterval(() => {
+        if (my !== token || !synced) return clearInterval(iv);
+        if (p.ready) { clearInterval(iv); return reveal(); }
+        // A video that hasn't loaded after 6 s: try a fresh address once (see recoverVideo).
+        if (item.type === 'video' && !p.retried && Date.now() - t0 > 6000) {
+          p.retried = true;
+          const fresh = item.url + (item.url.includes('?') ? '&' : '?') + 'retry=' + Date.now().toString(36);
+          freshSrc.set(item.url, fresh);
+          p.el.addEventListener('loadeddata', () => { p.ready = true; }, { once: true });
+          p.el.src = fresh;
+          p.el.load();
+        }
+      }, 30);
       setTimeout(() => { clearInterval(iv); if (!p.ready && my === token) { lastError = lastError || `${item.name}: took too long to load`; p.layer.remove(); } }, 20000);
     }
   }
@@ -505,7 +539,7 @@
     if (up.timeline) {
       const loc = locate(up.timeline, up.at + 1);
       const it = !loc.ended && itemFor(up, loc.step.key);
-      if (it) upTimers.push(setTimeout(() => syncPrepare(it, loc.step, loc.at), Math.max(0, lead - PREP_MS)));
+      if (it) upTimers.push(setTimeout(() => syncPrepare(it, loc.step, loc.at, true), Math.max(0, lead - PREP_MS)));
     }
     upTimers.push(setTimeout(() => { if (upcoming === up) { upcoming = null; applyState(up, 0); } }, Math.max(0, lead)));
   }
@@ -516,7 +550,7 @@
     for (let i = 0; i < samples; i++) {
       try {
         const t0 = wall();
-        const j = await (await fetch('/api/time', { cache: 'no-store' })).json();
+        const j = await (await fetchT('/api/time', { cache: 'no-store' }, 3000)).json();
         const t1 = wall();
         if (!best || t1 - t0 < best.rtt) best = { rtt: t1 - t0, offset: j.now - (t0 + t1) / 2 };
       } catch {}
@@ -527,6 +561,46 @@
     if (clock && Math.abs(best.offset - clock.offset) < 40) best.offset = clock.offset + (best.offset - clock.offset) * 0.5;
     clock = best;
   }
+
+  /* ---------- Video watchdog ----------
+     A video on screen that stops moving (its download died, e.g. the server restarted part-way through) is
+     reloaded from a fresh address at the same point. If it's still stuck after that, the player moves on. */
+  function recoverVideo(v) {
+    const item = v.__item;
+    if (!item) return;
+    v.__tries = (v.__tries || 0) + 1;
+    if (v.__tries > 2) {
+      lastError = `${item.name}: video keeps stopping while loading`;
+      if (!synced && current === item) next(); // the synced engine moves on by itself at the next item
+      return;
+    }
+    lastError = `${item.name}: video stopped loading, so it was reloaded`;
+    const fresh = item.url + (item.url.includes('?') ? '&' : '?') + 'retry=' + Date.now().toString(36);
+    freshSrc.set(item.url, fresh);
+    const pos = synced && shown && shown.el === v ? (serverMs() - shown.at) / 1000 : v.currentTime;
+    v.addEventListener('loadedmetadata', () => {
+      try { v.currentTime = Math.max(0, Math.min(pos, (v.duration || pos) - 0.2)); } catch {}
+      const p = v.play();
+      if (p && p.catch) p.catch(() => { v.muted = true; v.play().catch(() => {}); });
+    }, { once: true });
+    v.src = fresh;
+    v.load();
+  }
+  // Every second, look at the video on screen: over each 8 seconds it should have played about 8 seconds.
+  // Less than half that means it's stuck or crawling (a download that keeps stalling).
+  setInterval(() => {
+    const top = [...stage.querySelectorAll('.layer.show')].sort((a, b) => (+b.style.zIndex || 0) - (+a.style.zIndex || 0))[0];
+    const v = top && top.querySelector('video');
+    if (!v) return;
+    const t = performance.now();
+    if (v.paused || v.ended) { v.__w = null; return; } // paused includes the synced engine holding a last frame
+    if (!v.__w || v.currentTime < v.__w.ct - 0.5) { v.__w = { t, ct: v.currentTime }; return; } // starting, or looped round
+    const secs = (t - v.__w.t) / 1000;
+    if (secs < 8) return;
+    const played = v.currentTime - v.__w.ct;
+    v.__w = { t, ct: v.currentTime };
+    if (played < secs * 0.5) recoverVideo(v);
+  }, 1000);
 
   function slide(item) {
     const d = document.createElement('div');

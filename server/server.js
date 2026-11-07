@@ -18,12 +18,13 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { pipeline } = require('stream');
 const { URL } = require('url');
 const { createSpotify } = require('./spotify');
 const { createFolders } = require('./folders');
 const { createAccounts, MAX_TRIES, LOCK_MS } = require('./accounts');
 
-const VERSION = '1.13.0';
+const VERSION = '1.13.1';
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, '..', 'data'));
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
@@ -632,7 +633,10 @@ function serveFile(req, res, file, cacheSeconds = 0, extraHeaders = null) {
       res.writeHead(304, headers);
       return res.end();
     }
-    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+    // "Only send part of it if it hasn't changed": if it has changed, send the whole file instead.
+    const ifRange = req.headers['if-range'];
+    const rangeOk = !ifRange || ifRange === headers['Last-Modified'];
+    const range = rangeOk && /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
     if (range && (range[1] || range[2])) {
       let start = range[1] ? parseInt(range[1], 10) : st.size - parseInt(range[2], 10);
       let end = range[1] && range[2] ? parseInt(range[2], 10) : st.size - 1;
@@ -644,11 +648,12 @@ function serveFile(req, res, file, cacheSeconds = 0, extraHeaders = null) {
       end = Math.min(end, st.size - 1);
       res.writeHead(206, Object.assign(headers, { 'Content-Range': `bytes ${start}-${end}/${st.size}`, 'Content-Length': end - start + 1 }));
       if (req.method === 'HEAD') return res.end();
-      return fs.createReadStream(file, { start, end }).pipe(res);
+      // pipeline (not pipe) closes the file if the TV abandons the download part-way, which they often do.
+      return pipeline(fs.createReadStream(file, { start, end }), res, () => {});
     }
     res.writeHead(200, Object.assign(headers, { 'Content-Length': st.size }));
     if (req.method === 'HEAD') return res.end();
-    fs.createReadStream(file).pipe(res);
+    pipeline(fs.createReadStream(file), res, () => {});
   });
 }
 
