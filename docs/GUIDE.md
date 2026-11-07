@@ -290,6 +290,12 @@ To move to a new computer, copy the whole `enjoy-signage` folder, including `dat
 
 - `server/server.js` is a plain Node `http` server. It handles the JSON API, schedule resolution, streamed uploads, and file serving with HTTP Range support for video seeking. It holds state in memory and writes it atomically to `data/db.json` on every change.
 - `public/player.html` polls `GET /api/player/:id/state` every 5 seconds. The response includes a content hash, and the player only restarts its loop when that hash changes. That poll is also the heartbeat shown in the admin panel. Playback uses two stacked layers to crossfade, and images and videos are cached by the browser.
+- **Synced playback.** Each state response can include a `timeline`:
+  - the start moment of what the screen is showing: the schedule window, the takeover's `startAt`, or 0 for default playlists
+  - every item's length; screens in a room get one shared, step-by-step timeline
+  - an `upcoming` state when a change is due within 6 seconds
+
+  Players line up their clock with `GET /api/time`, taking several round trips and keeping the quickest. They work out where they should be, load the next item ahead, start it on the moment, and nudge video speed (±4 %) to stay lined up. `GET /api/player/:id/events` is a push connection that tells players the moment anything changes. Without a timeline (sync off, or a video length unknown), the player uses its original independent loop. Video lengths are stored on the media (`length`, `lengthFor`).
 - `public/admin.*` is the admin single-page app, written in vanilla JS with no build step.
 - Schedules use the **server computer's clock and time zone**, so check it is set correctly. Countdowns use the server's time too.
 
@@ -299,7 +305,7 @@ API summary:
 - `POST|PUT|DELETE` on `/api/screens`, `/api/playlists`, `/api/schedules` and `/api/media` manage each kind of item.
 - `POST /api/uploads/start`, `PUT /api/uploads/:id?offset=N`, `POST /api/uploads/:id/finish` upload a file in pieces (any size, resumable). `POST /api/media/upload?name=file.mp4` still takes a whole file in one request.
 - Changes (anything but GET) from the admin panel must send the header `X-Signage: 1`; this blocks forged cross-site requests. Uploaded files are served with a sandboxing Content-Security-Policy, and SVG uploads are refused.
-- `POST /api/overrides` with `{playlistId, allScreens|screenIds, minutes}` starts a takeover.
+- `POST /api/overrides` with `{playlistId, allScreens|screenIds, minutes}` starts a takeover (3 seconds later, so all screens start it together).
 - `DELETE /api/overrides/:id` stops a takeover.
 - `POST /api/folders` with `{name}` creates a drop folder. `POST /api/settings` with `{foldersDir}` changes where drop folders live. `server/folders.js` holds the scanning logic.
 - `POST /api/player/:id/music?hold=1|0` is what a player sends when an item that should pause the music starts or ends. `server/spotify.js` holds all the Spotify logic.
