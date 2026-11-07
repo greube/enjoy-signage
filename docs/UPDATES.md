@@ -76,3 +76,4 @@ Download the new version as a zip or .tar.gz, extract it, and run its installer,
 | *GitHub is limiting requests* | Try again later. A token also raises the limit, even for a public repository. |
 | *Version X didn't start properly, so putting Y back…* | The new version has a problem. You're back on the previous version and nothing was lost. Send the messages shown to whoever made the change. |
 | *Couldn't reach GitHub* | The server has no internet access right now. |
+| *GitHub's servers didn't answer properly (504…)* | GitHub's download server timed out. The updater already tries 3 times and then GitHub's other download address, so this means GitHub is having a bad few minutes. Try again later, or install from a download. |

@@ -24,7 +24,7 @@ const { createSpotify } = require('./spotify');
 const { createFolders } = require('./folders');
 const { createAccounts, MAX_TRIES, LOCK_MS } = require('./accounts');
 
-const VERSION = '1.13.1';
+const VERSION = '1.13.2';
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, '..', 'data'));
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');

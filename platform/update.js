@@ -79,16 +79,21 @@ function compareVersions(a, b) {
 
 // ---------------------------------------------------------------- GitHub
 
-async function github(urlPath, token, accept) {
+// GitHub's other addresses for the same files (public repositories only), used if the API keeps failing.
+const RAW = (process.env.ENJOY_SIGNAGE_UPDATE_RAW || 'https://raw.githubusercontent.com').replace(/\/$/, '');
+const CODELOAD = (process.env.ENJOY_SIGNAGE_UPDATE_CODELOAD || 'https://codeload.github.com').replace(/\/$/, '');
+const STATUS_TEXT = { 500: 'server error', 502: 'bad gateway', 503: 'service unavailable', 504: 'gateway timeout' };
+
+/** One request, with a time limit. Resolves to the response, or throws a Fail for a network problem. */
+async function get(url, token, accept, ms) {
   const headers = { 'User-Agent': 'enjoy-signage-updater', Accept: accept, 'X-GitHub-Api-Version': '2022-11-28' };
   if (token) headers.Authorization = `Bearer ${token}`;
-  let res;
   try {
-    res = await fetch(API + urlPath, { headers, redirect: 'follow' });
+    return await fetch(url, { headers, redirect: 'follow', signal: AbortSignal.timeout(ms) });
   } catch (e) {
-    throw new Fail(`Couldn't reach GitHub (${e.cause && e.cause.code ? e.cause.code : e.message}). Check this computer's internet connection.`);
+    const why = e.name === 'TimeoutError' ? 'it took too long' : e.cause && e.cause.code ? e.cause.code : e.message;
+    throw Object.assign(new Fail(`Couldn't reach GitHub (${why}). Check this computer's internet connection.`), { retry: true });
   }
-  return res;
 }
 
 function explainHttp(res, repo, token) {
@@ -96,29 +101,71 @@ function explainHttp(res, repo, token) {
   if (res.status === 404) return `Couldn't find ${repo} with the saved token. Check the repository name, and that the token has access to it.`;
   if (res.status === 401) return 'GitHub didn’t accept the access token (it may have expired). Run the update again with  --token NEW-TOKEN.';
   if (res.status === 403 || res.status === 429) return 'GitHub is limiting requests from this network right now. Try again in an hour, or use a token (--token), which has a higher limit.';
-  return `GitHub answered ${res.status} ${res.statusText}.`;
+  if (res.status >= 500) return `GitHub's servers didn't answer properly (${res.status} ${STATUS_TEXT[res.status] || ''}). That's usually temporary: try the update again in a few minutes.`;
+  return `GitHub answered ${res.status}.`;
 }
 
+/**
+ * Fetch with patience: GitHub's servers (especially the one that packs downloads) occasionally time out.
+ * Tries each address up to 3 times, waiting a little longer each time, on server errors and network
+ * problems; anything else (not found, bad token) stops at once. `read` turns a good response into the result.
+ */
+async function patiently(what, urls, token, accept, ms, read, repo) {
+  let last = null;
+  for (const url of urls) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      let problem;
+      try {
+        const res = await get(url, token, accept, ms);
+        if (res.ok) {
+          try { return await read(res); } catch (e) { if (e instanceof Fail && !e.retry) throw e; problem = e; } // a download cut off part-way: retry
+        } else if (res.status >= 500 || res.status === 408) {
+          problem = Object.assign(retryable(new Fail(explainHttp(res, repo, token))), { short: `GitHub answered ${res.status}${STATUS_TEXT[res.status] ? ' ' + STATUS_TEXT[res.status] : ''}` });
+        } else throw new Fail(explainHttp(res, repo, token));
+      } catch (e) {
+        if (!(e instanceof Fail) || !e.retry) throw e;
+        problem = e;
+      }
+      last = problem;
+      const wait = [3, 8, 15][attempt - 1];
+      if (attempt < 3) { info(`${what} didn’t work (${String(problem.short || problem.message).replace(/\.$/, '')}); trying again in ${wait} s…`); await sleep(wait * 1000); }
+    }
+    if (urls.length > 1 && url !== urls[urls.length - 1]) info(`Trying GitHub’s other address for ${what.toLowerCase()}…`);
+  }
+  throw last;
+}
+// Marks a Fail as worth retrying (server errors, network problems, a download cut off).
+const retryable = (f) => Object.assign(f, { retry: true });
+
 async function remoteVersion(repo, branch, token) {
-  const res = await github(`/repos/${repo}/contents/package.json?ref=${encodeURIComponent(branch)}`, token, 'application/vnd.github.raw+json');
-  if (!res.ok) throw new Fail(explainHttp(res, repo, token));
-  let pkg;
-  try { pkg = JSON.parse(await res.text()); } catch { throw new Fail(`${repo} doesn't look like ENJOY Signage (its package.json couldn't be read).`); }
-  if (!pkg.version || !/signage/i.test(pkg.name || '')) throw new Fail(`${repo} doesn't look like ENJOY Signage.`);
-  return pkg.version;
+  const urls = [`${API}/repos/${repo}/contents/package.json?ref=${encodeURIComponent(branch)}`];
+  if (!token) urls.push(`${RAW}/${repo}/${encodeURIComponent(branch)}/package.json`);
+  return patiently('Checking the version', urls, token, 'application/vnd.github.raw+json', 20000, async (res) => {
+    let pkg;
+    try { pkg = JSON.parse(await res.text()); } catch { throw new Fail(`${repo} doesn't look like ENJOY Signage (its package.json couldn't be read).`); }
+    if (!pkg.version || !/signage/i.test(pkg.name || '')) throw new Fail(`${repo} doesn't look like ENJOY Signage.`);
+    return pkg.version;
+  }, repo);
 }
 
 async function download(repo, branch, token) {
-  const res = await github(`/repos/${repo}/tarball/${encodeURIComponent(branch)}`, token, 'application/vnd.github+json');
-  if (!res.ok) throw new Fail(explainHttp(res, repo, token));
-  const chunks = [];
-  let total = 0;
-  for await (const c of res.body) {
-    total += c.length;
-    if (total > MAX_DOWNLOAD) throw new Fail('The download is unexpectedly large, so it was stopped.');
-    chunks.push(c);
-  }
-  return Buffer.concat(chunks);
+  const urls = [`${API}/repos/${repo}/tarball/${encodeURIComponent(branch)}`];
+  if (!token) urls.push(`${CODELOAD}/${repo}/tar.gz/refs/heads/${encodeURIComponent(branch)}`);
+  return patiently('The download', urls, token, 'application/vnd.github+json', 180000, async (res) => {
+    const chunks = [];
+    let total = 0;
+    try {
+      for await (const c of res.body) {
+        total += c.length;
+        if (total > MAX_DOWNLOAD) throw new Fail('The download is unexpectedly large, so it was stopped.');
+        chunks.push(c);
+      }
+    } catch (e) {
+      if (e instanceof Fail) throw e;
+      throw retryable(new Fail('The download was cut off part-way'));
+    }
+    return Buffer.concat(chunks);
+  }, repo);
 }
 
 // ---------------------------------------------------------------- unpacking a .tar.gz (no dependencies)
