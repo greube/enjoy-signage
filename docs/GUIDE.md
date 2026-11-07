@@ -164,6 +164,23 @@ To show a different logo instead (for a campus or an event, say), go to **Setup 
 
 ---
 
+### Keeping screens in sync
+
+Screens play in step with each other:
+
+- **Every screen showing the same playlist plays it in sync.** They change items at the same moment and keep videos lined up, typically within a few hundredths of a second. A screen that's switched on late, or reloads, jumps straight to the right point instead of starting from the top.
+- **Screens in the same room change items together, even with different playlists.** Give screens a **Room** (Screens → Edit → Room, e.g. *Foyer*). At each step every screen in the room shows its own next item, and the room moves on when the longest of them has finished. A shorter item stays up until then: an image stays on screen, and a video holds on its last frame. If something new starts on any screen in the room (a schedule or takeover), the whole room starts its beat again together.
+- **Scheduled changes happen on the moment.** Screens hear about a change a few seconds in advance, load it, and all switch on the exact second. A takeover starts about 3 seconds after you press **Start takeover**, so every screen has it ready and they all start together.
+- Each screen card on the Screens page shows how closely that screen is keeping time, e.g. *⏱ Synced · within 4 ms*.
+
+**Videos need their length known.** Videos uploaded in the admin panel are measured as they upload. Videos added before version 1.13, and drop-folder videos, are measured by a TV the first time it plays them. Until then the card says *Not synced yet* and the screen plays as before.
+
+**Turning it off:** in a playlist, set **Screens** to **Each on its own**, and every screen plays it at its own pace, as in earlier versions.
+
+**Sound:** if several screens in one room play the same video, let only one of them play sound (Screens → Edit → Sound). Even a few hundredths of a second between speakers can sound like an echo.
+
+**How close it gets:** within a frame or two on mini PCs, Chromecast/Google TV and Fire TV devices. Older smart-TV built-in browsers can be a tenth of a second or so apart, and may occasionally skip a moment to catch up. Web pages and YouTube items switch on and off together, but what plays inside them can't be kept in step.
+
 ## 4. Drop folders: playlists that fill themselves
 
 Link a playlist to a folder on the server, and images and videos dropped into it are added automatically. No admin panel needed: the office can save next week's notices straight into the folder. Once a file has been added, it's an ordinary item, so you can still fine-tune everything in the admin panel.

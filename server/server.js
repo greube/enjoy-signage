@@ -23,7 +23,7 @@ const { createSpotify } = require('./spotify');
 const { createFolders } = require('./folders');
 const { createAccounts, MAX_TRIES, LOCK_MS } = require('./accounts');
 
-const VERSION = '1.12.1';
+const VERSION = '1.13.0';
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, '..', 'data'));
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
@@ -86,7 +86,18 @@ function save() {
   const tmp = DB_FILE + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
   fs.renameSync(tmp, DB_FILE);
+  announceChange();
 }
+
+/* Players keep a push connection open (/api/player/:id/events) and check in the moment anything changes,
+   instead of waiting for their next 5-second check. Old TV browsers without it just keep checking. */
+const listeners = new Set();
+let changeTimer = null;
+function announceChange() {
+  clearTimeout(changeTimer);
+  changeTimer = setTimeout(() => { for (const r of listeners) r.write('data: change\n\n'); }, 40);
+}
+setInterval(() => { for (const r of listeners) r.write(': still here\n\n'); }, 25000).unref();
 
 const screenName = (id) => (id === '__test__' ? 'Test' : (db.screens.find((x) => x.id === id) || {}).name || id);
 const uid = () => crypto.randomBytes(5).toString('hex');
@@ -143,7 +154,8 @@ function scheduleOccurrence(s, now = new Date()) {
 }
 
 const targets = (rule, screenId) => !!rule.allScreens || (rule.screenIds || []).includes(screenId);
-const overrideActive = (o, now = Date.now()) => !o.until || o.until > now;
+const overrideActive = (o, now = Date.now()) => (!o.startAt || o.startAt <= now) && (!o.until || o.until > now);
+const overrideExpired = (o, now = Date.now()) => !!o.until && o.until <= now;
 
 /**
  * Work out what a screen should be showing right now. Takeover > schedule > default.
@@ -180,6 +192,117 @@ function resolveScreen(screen, now = new Date()) {
   const pl = byId(db.playlists, screen.defaultPlaylistId);
   if (pl) return { source: 'default', label: 'Default', playlist: pl, note };
   return { source: 'none', label: 'Nothing assigned', playlist: null, note };
+}
+
+/* ------------------------------------------------------------------ */
+/* Synced playback                                                     */
+/* ------------------------------------------------------------------ */
+//
+// Every screen works out where it should be from the same timeline: a start moment for what it's showing
+// (the "showing") plus the length of each item. Screens showing the same thing from the same moment are
+// therefore in step, and a screen that joins late jumps straight to the right place. Screens in a room
+// share one beat: at each step each shows its own next item, and the step lasts as long as the longest.
+
+const SYNC_LOOKAHEAD = 6000; // players hear about a scheduled change this long before it, so all switch on the moment
+const TAKEOVER_LEAD = 3000; // a new takeover starts this long after it's created, for the same reason
+const roomOf = (s) => String((s && s.room) || '').trim().toLowerCase();
+const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+
+/** A video's length in seconds, if it has been measured for this version of the file. */
+function videoLength(m) {
+  if (!(m.length > 0)) return null;
+  if (m.lengthFor && m.lengthFor !== mediaUrl(m)) return null; // the file was replaced since
+  return m.length;
+}
+
+/** When the showing r began (ms since 1970). */
+function showingStart(r, now) {
+  if (r.source === 'takeover') { const o = byId(db.overrides, r.refId); return o ? o.startAt || o.createdAt : 0; }
+  if (r.source === 'schedule') {
+    const sc = byId(db.schedules, r.refId);
+    const day = sc && scheduleOccurrence(sc, now);
+    if (!day) return 0;
+    const [y, mo, d] = day.split('-').map(Number);
+    const [hh, mm] = sc.startTime.split(':').map(Number);
+    return new Date(y, mo - 1, d, hh, mm, 0, 0).getTime();
+  }
+  return 0; // default playlists share one fixed reference, so every screen showing one agrees
+}
+
+/** Seconds each item lasts, or null if one isn't known (a video nobody has measured yet). */
+function itemLengths(items) {
+  const out = items.map((it) => (it.duration > 0 ? it.duration : it.type === 'video' ? it.length || null : null));
+  return out.every((x) => x > 0) ? out : null;
+}
+
+function steps(rows) {
+  let t = 0;
+  const list = rows.map((r) => { const st = { key: r.key, at: +t.toFixed(3), len: +r.len.toFixed(3), own: +Math.min(r.own, r.len).toFixed(3) }; t += r.len; return st; });
+  return { steps: list, cycle: +t.toFixed(3) };
+}
+
+/** The timeline for screen (showing r with items), or why there isn't one: 'off' (sync turned off) or 'lengths'. */
+function timelineFor(screen, r, items, now) {
+  if (!r.playlist || !items.length) return { timeline: null, why: '' };
+  if (r.playlist.sync === false) return { timeline: null, why: 'off' };
+  const own = itemLengths(items);
+  if (!own) return { timeline: null, why: 'lengths' };
+  const solo = () => ({ anchor: showingStart(r, now), loop: !r.onceKey, ...steps(items.map((it, i) => ({ key: it.key, own: own[i], len: own[i] }))) });
+  if (r.onceKey || !roomOf(screen)) return { timeline: solo(), why: '' };
+  const members = [];
+  for (const sc of db.screens) {
+    if (roomOf(sc) !== roomOf(screen)) continue;
+    const rs = sc.id === screen.id ? r : resolveScreen(sc, now);
+    if (!rs.playlist || rs.playlist.sync === false || rs.onceKey) continue; // play-once showings keep their own time
+    const its = sc.id === screen.id ? items : buildItems(rs.playlist, sc);
+    const lens = its.length ? itemLengths(its) : null;
+    if (lens) members.push({ id: sc.id, lens, start: showingStart(rs, now) });
+  }
+  if (members.length < 2 || !members.some((m) => m.id === screen.id)) return { timeline: solo(), why: '' };
+  // Enough steps for every screen's playlist to come round evenly (capped, for very mismatched playlists).
+  let n = 1;
+  for (const m of members) { n = (n * m.lens.length) / gcd(n, m.lens.length); if (n > 240) { n = Math.max(...members.map((x) => x.lens.length)); break; } }
+  const rows = [];
+  for (let k = 0; k < n; k++) {
+    const i = k % items.length;
+    rows.push({ key: items[i].key, own: own[i], len: Math.max(...members.map((m) => m.lens[k % m.lens.length])) });
+  }
+  // The room's beat restarts whenever something new starts on any of its screens.
+  return { timeline: { anchor: Math.max(...members.map((m) => m.start)), loop: true, room: screen.room.trim(), ...steps(rows) }, why: '' };
+}
+
+/** Everything a player needs to show what screen should be showing at time `at`. */
+function playerPayload(screen, at = Date.now()) {
+  const now = new Date(at);
+  const r = resolveScreen(screen, now);
+  const items = r.playlist ? buildItems(r.playlist, screen) : [];
+  const { timeline, why } = timelineFor(screen, r, items, now);
+  const payload = {
+    screen: { id: screen.id, name: screen.name, rotation: screen.rotation || 0 },
+    source: r.source,
+    label: r.label,
+    playlistId: r.playlist ? r.playlist.id : null,
+    transition: r.playlist ? r.playlist.transition : 'fade',
+    playOnce: !!r.onceKey,
+    onceKey: r.onceKey || null,
+    items,
+    timeline,
+    logo: logoInfo() ? logoInfo().url : DEFAULT_WORDMARK,
+  };
+  const hash = crypto.createHash('sha1').update(JSON.stringify(payload)).digest('hex').slice(0, 16);
+  return { payload, hash, r, why };
+}
+
+/** If what this screen shows changes within the next few seconds, the moment and what it changes to. */
+function upcomingFor(screen, nowMs, currentHash) {
+  const times = new Set([Math.ceil((nowMs + 1) / 60000) * 60000]); // schedules change on the minute
+  for (const o of db.overrides) for (const t of [o.startAt, o.until]) if (t > nowMs) times.add(t);
+  for (const t of [...times].sort((a, b) => a - b)) {
+    if (t > nowMs + SYNC_LOOKAHEAD) break;
+    const next = playerPayload(screen, t + 1);
+    if (next.hash !== currentHash) return { at: t, hash: next.hash, ...next.payload };
+  }
+  return null;
 }
 
 /** A screen finished a play-once playlist: remember it (kept in db.json, so a restart doesn't replay it). */
@@ -291,6 +414,7 @@ function buildItems(playlist, screen) {
       const out = { key: it.id, mediaId: m.id, type: m.type, name: m.name, duration, fit: it.fit || 'contain', muted };
       if (wantsMusicPause(playlist, it.music, m.type === 'video' || (m.type === 'web' && !!youtubeEmbed(m.url)), muted)) out.pauseMusic = true;
       if (m.type === 'image' || m.type === 'video') out.url = mediaUrl(m);
+      if (m.type === 'video' && videoLength(m)) out.length = videoLength(m);
       if (m.type === 'web') out.url = youtubeEmbed(m.url, muted) || m.url;
       if (m.type === 'text' || m.type === 'countdown') {
         Object.assign(out, { title: m.title || '', body: m.body || '', bg: m.bg || '#1b2a4a', fg: m.fg || '#ffffff', align: m.align || 'center' });
@@ -307,7 +431,7 @@ function buildItems(playlist, screen) {
 // Tidy expired takeovers once a minute.
 setInterval(() => {
   const before = db.overrides.length;
-  db.overrides = db.overrides.filter((o) => overrideActive(o));
+  db.overrides = db.overrides.filter((o) => !overrideExpired(o));
   if (db.overrides.length !== before) save();
 }, 60000).unref();
 
@@ -341,6 +465,10 @@ function cleanMedia(b, existing) {
     o.target = time(b.target, '10:00');
     o.after = str(b.after, 300);
   }
+  if (type === 'video' && existing && b.length !== undefined && +b.length > 0.2 && +b.length < 86400) {
+    o.length = Math.round(+b.length * 1000) / 1000;
+    o.lengthFor = mediaUrl(existing);
+  }
   if (!existing) o.type = type;
   return o;
 }
@@ -363,6 +491,7 @@ function cleanPlaylist(b) {
     name: str(b.name, 200) || 'Untitled playlist',
     transition: b.transition === 'none' ? 'none' : 'fade',
     playOnce: !!b.playOnce, // when a schedule or takeover starts it: play through once, then step aside
+    sync: b.sync !== false, // screens showing it stay in step (see timelineFor)
     music: ['videos', 'all'].includes(b.music) ? b.music : 'keep',
     folder: cleanFolderFeed(b.folder, { items }),
     items,
@@ -415,6 +544,7 @@ function cleanScreen(b) {
     defaultPlaylistId: byId(db.playlists, b.defaultPlaylistId) ? b.defaultPlaylistId : '',
     rotation: [0, 90, 180, 270].includes(+b.rotation) ? +b.rotation : 0,
     audio: !!b.audio,
+    room: str(b.room, 60).trim(), // screens in the same room change items together
   };
 }
 
@@ -596,20 +726,41 @@ route('GET', '/api/player/:id/state', (req, res, p, url) => {
     if (key && resolveScreen(screen).onceKey === key) markPlayedOnce(screen.id, key);
   }
 
-  const r = resolveScreen(screen);
-  const payload = {
-    screen: { id: screen.id, name: screen.name, rotation: screen.rotation || 0 },
-    source: r.source,
-    label: r.label,
-    playlistId: r.playlist ? r.playlist.id : null,
-    transition: r.playlist ? r.playlist.transition : 'fade',
-    playOnce: !!r.onceKey,
-    onceKey: r.onceKey || null,
-    items: r.playlist ? buildItems(r.playlist, screen) : [],
-    logo: logoInfo() ? logoInfo().url : DEFAULT_WORDMARK,
-  };
-  const hash = crypto.createHash('sha1').update(JSON.stringify(payload)).digest('hex').slice(0, 16);
-  send(res, 200, Object.assign(payload, { hash, boot: BOOT_ID, serverNow: Date.now(), identify: (st.identifyUntil || 0) > Date.now() }));
+  // A player measured a video's length (for videos added before lengths were recorded, and drop-folder videos).
+  if (url.searchParams.has('len')) {
+    try {
+      const [mid, secs, src] = JSON.parse(url.searchParams.get('len'));
+      const m = byId(db.media, mid);
+      if (m && m.type === 'video' && !videoLength(m) && src === mediaUrl(m) && +secs > 0.2 && +secs < 86400) {
+        m.length = Math.round(+secs * 1000) / 1000;
+        m.lengthFor = src;
+        save();
+      }
+    } catch {}
+  }
+  // How far the player is from its timeline, and how good its clock reading is (shown on the Screens page).
+  if (url.searchParams.has('sync')) {
+    const off = Math.round(+url.searchParams.get('sync'));
+    st.sync = { off: Number.isFinite(off) ? Math.max(-99999, Math.min(99999, off)) : null, rtt: Math.round(+url.searchParams.get('rtt')) || null, at: Date.now() };
+  } else st.sync = null;
+
+  const nowMs = Date.now();
+  const { payload, hash } = playerPayload(screen, nowMs);
+  const upcoming = upcomingFor(screen, nowMs, hash);
+  send(res, 200, Object.assign(payload, { hash, upcoming, boot: BOOT_ID, serverNow: Date.now(), identify: (st.identifyUntil || 0) > Date.now() }));
+}, { open: true });
+
+// Precise time, for players to line their clocks up with the server's (several quick samples each).
+route('GET', '/api/time', (req, res) => send(res, 200, { now: Date.now() }), { open: true });
+
+// Push channel: players are told the moment anything changes.
+route('GET', '/api/player/:id/events', (req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  res.write('retry: 3000\n\n');
+  listeners.add(res);
+  const done = () => listeners.delete(res);
+  req.on('close', done);
+  res.on('error', done);
 }, { open: true });
 
 // Instant signal from a player: an item that should silence the background music has started / finished.
@@ -726,8 +877,9 @@ route('GET', '/api/state', (req, res) => {
   const now = new Date();
   const resolved = {};
   for (const s of db.screens) {
-    const r = resolveScreen(s, now);
-    resolved[s.id] = { source: r.source, label: r.label, refId: r.refId || null, until: r.until || null, playlistId: r.playlist ? r.playlist.id : null, playlistName: r.playlist ? r.playlist.name : null, playOnce: !!r.onceKey, note: r.note || '' };
+    const { r, payload, why } = playerPayload(s, now.getTime());
+    const sync = payload.timeline ? (payload.timeline.room ? 'room' : 'on') : why || 'none'; // on | room | off | lengths | none
+    resolved[s.id] = { source: r.source, label: r.label, refId: r.refId || null, until: r.until || null, playlistId: r.playlist ? r.playlist.id : null, playlistName: r.playlist ? r.playlist.name : null, playOnce: !!r.onceKey, note: r.note || '', sync, room: s.room || '' };
   }
   const st = {};
   for (const [id, v] of Object.entries(status)) st[id] = Object.assign({}, v, { online: Date.now() - (v.lastSeen || 0) < ONLINE_MS });
@@ -1223,7 +1375,9 @@ route('POST', '/api/overrides', async (req, res) => {
   const screenIds = idList(b.screenIds, db.screens);
   if (!b.allScreens && !screenIds.length) throw httpError(400, 'Choose at least one screen');
   const minutes = Math.max(0, Math.min(7 * 24 * 60, parseInt(b.minutes, 10) || 0));
-  const o = { id: uid(), playlistId: b.playlistId, allScreens: !!b.allScreens, screenIds, createdAt: Date.now(), until: minutes ? Date.now() + minutes * 60000 : null };
+  // Starts a few seconds from now, so every screen has it loaded and they all start it together.
+  const startAt = Date.now() + TAKEOVER_LEAD;
+  const o = { id: uid(), playlistId: b.playlistId, allScreens: !!b.allScreens, screenIds, createdAt: Date.now(), startAt, until: minutes ? startAt + minutes * 60000 : null };
   db.overrides.push(o);
   save();
   send(res, 200, o);

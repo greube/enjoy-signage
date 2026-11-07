@@ -80,7 +80,13 @@
   let playedKey = ''; // a play-once playlist we've finished, until the server has moved this screen on
   let current = null, serverOffset = 0, lastError = '', countdownTimers = [];
   let musicHold = false; // true while showing an item that should pause the background music (Spotify)
-  const now = () => new Date(Date.now() + serverOffset);
+  // The server's clock. Measured precisely (see syncClock); until then, roughly from the last check-in.
+  const wall = () => performance.timeOrigin + performance.now(); // steady, unlike Date.now(), which can jump
+  let clock = null; // { offset, rtt } once measured
+  const serverMs = () => (clock ? wall() + clock.offset : Date.now() + serverOffset);
+  const now = () => new Date(serverMs());
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let pendingLength = ''; // a video length we measured, to send with the next check-in
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   /** Show the church logo (uploaded in Setup → Branding) in an <img>, or hide it if there isn't one. */
@@ -129,7 +135,7 @@
     try {
       const url = previewId
         ? `/api/preview/${encodeURIComponent(previewId)}/state`
-        : `/api/player/${encodeURIComponent(screenId)}/state?item=${encodeURIComponent(current ? current.name : '')}&res=${innerWidth}x${innerHeight}&music=${musicHold ? 1 : 0}${lastError ? '&err=' + encodeURIComponent(lastError) : ''}${playedKey ? '&played=' + encodeURIComponent(playedKey) : ''}`;
+        : `/api/player/${encodeURIComponent(screenId)}/state?item=${encodeURIComponent(current ? current.name : '')}&res=${innerWidth}x${innerHeight}&music=${musicHold ? 1 : 0}${lastError ? '&err=' + encodeURIComponent(lastError) : ''}${playedKey ? '&played=' + encodeURIComponent(playedKey) : ''}${pendingLength ? '&len=' + encodeURIComponent(pendingLength) : ''}${synced ? `&sync=${Math.round(syncErr)}&rtt=${clock ? Math.round(clock.rtt) : ''}` : ''}`;
       const r = await fetch(url, { cache: 'no-store' });
       if (r.status === 404) {
         if (!previewId) { store.set(null); location.replace('/player?pick'); return; }
@@ -138,6 +144,7 @@
       }
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const s = await r.json();
+      pendingLength = '';
       setOnline(true);
       if (boot && s.boot !== boot) { location.reload(); return; } // server restarted (maybe updated) → reload player
       boot = s.boot;
@@ -146,10 +153,11 @@
       showIdentify(s.identify, s.screen.name);
       setLogo(document.getElementById('idle-logo'), s.logo);
       if (playedKey && s.onceKey !== playedKey) playedKey = ''; // the server has recorded it (or moved on anyway)
-      if (s.hash !== hash) {
+      if (s.hash !== hash && !(upcoming && upcoming.hash === s.hash)) {
         const prevCount = state && state.playlistId === s.playlistId && state.onceKey === s.onceKey ? state.items.length : 0; // a different playlist (or a new play-once showing) always starts fresh
-        hash = s.hash; state = s; startPlaylist(prevCount);
+        applyState(s, prevCount);
       }
+      if (!previewId) setUpcoming(s.upcoming && s.upcoming.hash !== hash ? s.upcoming : null);
     } catch (e) {
       setOnline(false); // keep playing whatever we have
     } finally {
@@ -284,6 +292,7 @@
         el.preload = 'auto';
         if (single) el.loop = true;
         el.addEventListener('canplay', ready, { once: true });
+        el.addEventListener('loadedmetadata', () => noteLength(item, el), { once: true });
         el.onerror = () => fail('video failed to play (check the format is MP4/H.264 or WebM)');
         el.onended = () => { if (my === token) next(); };
         el.src = item.url;
@@ -306,6 +315,217 @@
     }
     layer.appendChild(el);
     stage.appendChild(layer);
+  }
+
+  /* ---------- Synced playback ----------
+     When the server sends a timeline, every screen works out from the shared clock which item should be on
+     screen and how far into it, loads the next item ahead of time and starts it on the exact moment, and
+     keeps videos in step with gentle speed changes. Without a timeline, the engine above runs as before. */
+  let synced = false, sTimer = null, sTimers = [], syncErr = 0;
+  let shown = null; // { key, at (server ms the step began), layer, el, item, own }
+  const prepared = new Map(); // `${key}@${at}` → { layer, el, item, ready }
+  let upcoming = null, upTimers = [];
+  const PREP_MS = 8000; // start loading the next item this long before it's due
+
+  function noteLength(item, el) {
+    if (item.type === 'video' && !item.length && isFinite(el.duration) && el.duration > 0.2) pendingLength = JSON.stringify([item.mediaId, el.duration, item.url]);
+  }
+
+  /** Which step of timeline tl is on screen at server time t. */
+  function locate(tl, t) {
+    let e = (t - tl.anchor) / 1000;
+    if (e < 0) e = 0;
+    let base = 0;
+    if (tl.loop) { const n = Math.floor(e / tl.cycle); base = n * tl.cycle; e -= base; }
+    else if (e >= tl.cycle) return { ended: true };
+    let i = tl.steps.length - 1;
+    for (let k = 0; k < tl.steps.length; k++) if (e < tl.steps[k].at + tl.steps[k].len) { i = k; break; }
+    const st = tl.steps[i];
+    return { i, step: st, at: tl.anchor + (base + st.at) * 1000 };
+  }
+  const itemFor = (s, key) => s.items.find((x) => x.key === key);
+
+  function applyState(s, prevCount = 0) {
+    hash = s.hash;
+    const was = synced;
+    state = s;
+    if (s.timeline && !previewId) {
+      if (!was) { clearTimeout(timer); token++; } // stop the other engine; what's on screen stays until replaced
+      synced = true;
+      document.getElementById('idle').style.display = 'none';
+      syncPlan();
+    } else {
+      if (was) syncStop();
+      startPlaylist(was ? 0 : prevCount);
+    }
+  }
+
+  function syncStop() {
+    synced = false;
+    clearTimeout(sTimer);
+    for (const p of prepared.values()) p.layer.remove();
+    prepared.clear();
+    shown = null;
+    [...stage.children].forEach((c) => { c.style.zIndex = ''; });
+  }
+
+  /** Decide what should be on screen now, show it if it isn't, and plan the next change. */
+  function syncPlan() {
+    clearTimeout(sTimer);
+    sTimers.forEach(clearTimeout); sTimers = [];
+    if (!synced) return;
+    const tl = state.timeline;
+    const t = serverMs();
+    const loc = locate(tl, t);
+    if (loc.ended) { // a play-once showing has finished: tell the server, keep the last item up
+      if (playedKey !== state.onceKey) { playedKey = state.onceKey; poll(); }
+      return;
+    }
+    const item = itemFor(state, loc.step.key);
+    if (!item) return;
+    // Already on screen? (A lone image or slide simply stays up; a video starts again each time round.)
+    const same = shown && shown.key === loc.step.key && (Math.abs(shown.at - loc.at) <= 1 || shown.item.type !== 'video');
+    if (same) { shown.at = loc.at; shown.own = loc.step.own; } else syncShow(item, loc.step, loc.at);
+    // The next change: the next step, unless an upcoming change comes first (that one prepares itself).
+    const nextAt = loc.at + loc.step.len * 1000;
+    if (upcoming && upcoming.at <= nextAt) return;
+    if (!tl.loop && nextAt >= tl.anchor + tl.cycle * 1000) { sTimer = setTimeout(syncPlan, Math.max(0, nextAt - serverMs())); return; }
+    const nl = locate(tl, nextAt + 1);
+    const nItem = !nl.ended && itemFor(state, nl.step.key);
+    if (nItem && !(nl.step.key === loc.step.key && nItem.type !== 'video')) {
+      sTimers.push(setTimeout(() => syncPrepare(nItem, nl.step, nl.at), Math.max(0, nextAt - PREP_MS - serverMs())));
+    }
+    sTimer = setTimeout(syncPlan, Math.max(0, nextAt - serverMs()));
+  }
+
+  /** Load an item ahead of time, hidden, ready to start at server time `at`. */
+  function syncPrepare(item, step, at) {
+    const id = `${step.key}@${at}`;
+    if (prepared.has(id) || at < serverMs() - 1000) return prepared.get(id);
+    const layer = document.createElement('div');
+    layer.className = 'layer' + (item.fit === 'cover' ? ' cover' : '');
+    const p = { layer, item, ready: false, el: null };
+    const done = () => { p.ready = true; };
+    let el;
+    switch (item.type) {
+      case 'image': el = new Image(); el.decoding = 'async'; el.onload = done; el.onerror = () => { lastError = `${item.name}: image failed to load`; }; el.src = item.url; break;
+      case 'video':
+        el = document.createElement('video');
+        el.muted = !!item.muted; el.playsInline = true; el.setAttribute('playsinline', ''); el.preload = 'auto';
+        el.addEventListener('loadeddata', done, { once: true });
+        el.addEventListener('loadedmetadata', () => noteLength(item, el), { once: true });
+        el.onerror = () => { lastError = `${item.name}: video failed to play (check the format is MP4/H.264 or WebM)`; };
+        el.src = item.url;
+        break;
+      case 'web': el = document.createElement('iframe'); el.allow = 'autoplay; fullscreen; encrypted-media'; el.referrerPolicy = 'no-referrer-when-downgrade'; el.onload = done; el.src = item.url; setTimeout(done, 5000); break;
+      case 'text': case 'countdown': el = slide(item); done(); break;
+      default: return null;
+    }
+    p.el = el;
+    layer.appendChild(el);
+    stage.insertBefore(layer, stage.firstChild); // underneath, invisible, until it's due
+    prepared.set(id, p);
+    // Forget preparations that were never used (e.g. the playlist changed meanwhile).
+    for (const [k, q] of prepared) if (+k.split('@').pop() < serverMs() - 60000) { q.layer.remove(); prepared.delete(k); }
+    return p;
+  }
+
+  /** Put an item on screen for the step that began at server time `at` (joining part-way if it's late). */
+  function syncShow(item, step, at) {
+    const my = ++token;
+    const id = `${step.key}@${at}`;
+    const p = prepared.get(id) || syncPrepare(item, step, at);
+    if (!p) return;
+    prepared.delete(id);
+    const reveal = () => {
+      if (my !== token || !synced) return;
+      const { layer, el } = p;
+      const sameAgain = shown && shown.key === step.key; // the same item again (a lone video looping): cut, don't fade
+      layer.classList.toggle('cut', state.transition === 'none' || !!sameAgain);
+      // Bring it to the front by stacking order, not by moving it (moving would reload a web page).
+      const old = [...stage.children].filter((c) => c !== layer && !isPrepared(c));
+      old.forEach((c) => { c.style.zIndex = '1'; });
+      layer.style.zIndex = '2';
+      const late = (serverMs() - at) / 1000;
+      if (item.type === 'video') {
+        if (late > 0.25) el.currentTime = Math.min(late + 0.05, Math.max(0, (el.duration || late) - 0.1));
+        if (item.pauseMusic && !el.muted) {
+          el.volume = 0;
+          const t0 = performance.now();
+          const ramp = () => { if (my !== token) return; const k = Math.min(1, (performance.now() - t0) / 1500); el.volume = k; if (k < 1) requestAnimationFrame(ramp); };
+          requestAnimationFrame(ramp);
+        }
+        const pr = el.play();
+        if (pr && pr.catch) pr.catch(() => { el.muted = true; el.play().catch(() => {}); });
+      }
+      syncErr = item.type === 'video' ? 0 : Math.max(0, late * 1000);
+      requestAnimationFrame(() => {
+        layer.classList.add('show');
+        setTimeout(() => old.forEach(retire), layer.classList.contains('cut') ? 0 : 850);
+      });
+      shown = { key: step.key, at, layer, el, item, own: step.own };
+      current = item;
+      lastError = '';
+      setMusicHold(!!item.pauseMusic, item.name);
+    };
+    if (p.ready) reveal();
+    else {
+      // Not loaded yet (a slow network, or this screen just joined): show it the moment it is, at the right point.
+      const iv = setInterval(() => { if (my !== token || !synced) return clearInterval(iv); if (p.ready) { clearInterval(iv); reveal(); } }, 30);
+      setTimeout(() => { clearInterval(iv); if (!p.ready && my === token) { lastError = lastError || `${item.name}: took too long to load`; p.layer.remove(); } }, 20000);
+    }
+  }
+  const isPrepared = (layer) => { for (const p of prepared.values()) if (p.layer === layer) return true; return false; };
+
+  // Keep the video on screen in step with the timeline: nudge its speed slightly, or jump if it's far out.
+  setInterval(() => {
+    if (!synced || !shown || shown.item.type !== 'video' || !shown.el) return;
+    const v = shown.el;
+    const expected = (serverMs() - shown.at) / 1000;
+    if (expected >= shown.own - 0.05) { // past its own length: hold the last frame until the step ends
+      v.playbackRate = 1;
+      if (!v.paused && expected >= shown.own && v.duration > shown.own + 0.1) v.pause();
+      return;
+    }
+    if (v.paused || v.readyState < 3 || v.seeking) return;
+    const diff = v.currentTime - expected; // positive: ahead
+    syncErr = diff * 1000;
+    if (Math.abs(diff) > 1) { v.currentTime = expected + 0.1; v.playbackRate = 1; }
+    else if (Math.abs(diff) > 0.03) { try { v.playbackRate = 1 - Math.max(-0.04, Math.min(0.04, diff * 0.6)); } catch {} }
+    else if (v.playbackRate !== 1) v.playbackRate = 1;
+  }, 250);
+
+  /** A change due in a few seconds (a schedule starting, a takeover): load it now, switch on the moment. */
+  function setUpcoming(up) {
+    if ((up && up.hash) === (upcoming && upcoming.hash)) return;
+    upTimers.forEach(clearTimeout); upTimers = [];
+    upcoming = up;
+    if (!up) return synced && syncPlan();
+    const lead = up.at - serverMs();
+    if (up.timeline) {
+      const loc = locate(up.timeline, up.at + 1);
+      const it = !loc.ended && itemFor(up, loc.step.key);
+      if (it) upTimers.push(setTimeout(() => syncPrepare(it, loc.step, loc.at), Math.max(0, lead - PREP_MS)));
+    }
+    upTimers.push(setTimeout(() => { if (upcoming === up) { upcoming = null; applyState(up, 0); } }, Math.max(0, lead)));
+  }
+
+  /** Line our clock up with the server's: several quick round trips, keeping the quickest (the most exact). */
+  async function syncClock(samples) {
+    let best = null;
+    for (let i = 0; i < samples; i++) {
+      try {
+        const t0 = wall();
+        const j = await (await fetch('/api/time', { cache: 'no-store' })).json();
+        const t1 = wall();
+        if (!best || t1 - t0 < best.rtt) best = { rtt: t1 - t0, offset: j.now - (t0 + t1) / 2 };
+      } catch {}
+      await sleep(40);
+    }
+    if (!best) return;
+    // Small corrections are eased in, so videos aren't nudged back and forth by measurement noise.
+    if (clock && Math.abs(best.offset - clock.offset) < 40) best.offset = clock.offset + (best.offset - clock.offset) * 0.5;
+    clock = best;
   }
 
   function slide(item) {
@@ -350,7 +570,10 @@
   // Safety net: a full reload once a day at ~3am clears any browser memory build-up.
   setInterval(() => { const n = new Date(); if (n.getHours() === 3 && n.getMinutes() === 0 && performance.now() > 3600000) location.reload(); }, 30000);
 
-  poll();
+  // Hear about changes the moment they happen (TVs whose browsers can't do this still check every 5 s).
+  if (!previewId && window.EventSource) { try { new EventSource(`/api/player/${encodeURIComponent(screenId)}/events`).onmessage = () => poll(); } catch {} }
+  (previewId ? Promise.resolve() : syncClock(6)).then(poll);
+  if (!previewId) setInterval(() => syncClock(3), 60000);
 })();
 </script>
 </body>

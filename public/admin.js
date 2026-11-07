@@ -414,13 +414,14 @@ function screenCard(s) {
   return `<div class="card screen-card">
     <div class="top">
       <span class="dot ${online ? 'on' : 'off'}" title="${esc(seen)}"></span>
-      <div class="grow"><h3>${esc(s.name)}</h3><div class="loc">${esc(s.location || '')}${s.location ? ' · ' : ''}${esc(seen)}</div></div>
+      <div class="grow"><h3>${esc(s.name)}</h3><div class="loc">${s.room ? `<b>${esc(s.room)}</b> · ` : ''}${esc(s.location || '')}${s.location ? ' · ' : ''}${esc(seen)}</div></div>
     </div>
     <div class="now">
       <span class="badge ${r.source}">${badge}${r.source === 'schedule' ? ': ' + esc(r.label) : ''}${r.playOnce ? ' · plays once' : ''}</span>
       <div class="pl">${r.playlistName ? esc(r.playlistName) : '<span class="muted">No playlist — choose a default</span>'}</div>
       <div class="meta">${online && st.item ? 'Showing “' + esc(st.item) + '”' : ''}${online && st.res ? ' · ' + esc(st.res) : ''}${r.until ? ' · until ' + fmtUntil(r.until) : ''}</div>
       ${r.note ? `<div class="meta">▶ ${esc(r.note)}</div>` : ''}
+      ${syncLine(r, st, online)}
     </div>
     ${st.error && online ? `<div class="warn-line">⚠ ${esc(st.error)}</div>` : ''}
     <div class="linkbox"><code title="${esc(playerUrl(s.id))}">${esc(playerUrl(s.id))}</code><button class="btn sm ghost" data-action="copy" data-text="${esc(playerUrl(s.id))}">Copy</button></div>
@@ -434,10 +435,22 @@ function screenCard(s) {
   </div>`;
 }
 
+/** How the screen is keeping in step with the others (see Synced playback in the guide). */
+function syncLine(r, st, online) {
+  if (r.sync === 'lengths') return `<div class="meta" title="Synced playback needs every video's length. A TV measures it the first time it plays the video, then this screen switches to synced by itself.">⏱ Not synced yet: waiting for a TV to measure a video’s length</div>`;
+  if (r.sync !== 'on' && r.sync !== 'room') return '';
+  const off = online && st.sync && st.sync.off != null ? Math.abs(st.sync.off) : null;
+  const how = off == null ? '' : off <= 50 ? ` · within ${off} ms` : ` · catching up (${off >= 1000 ? (off / 1000).toFixed(1) + ' s' : off + ' ms'} out)`;
+  return `<div class="meta" title="Every screen showing this playlist plays it in step${r.sync === 'room' ? ', and screens in the same room change items together' : ''}.">⏱ ${r.sync === 'room' ? `In step with the <b>${esc(r.room)}</b> room` : 'Synced'}${how}</div>`;
+}
+
 function screenForm(s = {}) {
   return `
     <label class="field"><span>Name</span><input type="text" name="name" value="${esc(s.name || '')}" placeholder="e.g. Foyer TV" required></label>
     <label class="field"><span>Location <em class="muted">(optional)</em></span><input type="text" name="location" value="${esc(s.location || '')}" placeholder="e.g. Main entrance, left wall"></label>
+    <label class="field"><span>Room <em class="muted">(optional)</em></span><input type="text" name="room" list="room-list" value="${esc(s.room || '')}" placeholder="e.g. Foyer" maxlength="60">
+      <datalist id="room-list">${[...new Set(S.db.screens.map((x) => (x.room || '').trim()).filter(Boolean))].map((r) => `<option value="${esc(r)}">`).join('')}</datalist>
+      <div class="hint">Screens in the same room change items at the same moments, even when they show different playlists.</div></label>
     <label class="field"><span>Default playlist</span><select name="defaultPlaylistId">${playlistOptions(s.defaultPlaylistId, { none: '— None (black screen) —' })}</select>
       <div class="hint">Plays whenever no schedule or takeover is active.</div></label>
     <div class="grid2">
@@ -566,6 +579,22 @@ async function uploadInPieces(file, onPercent) {
   }
 }
 
+/** A video file's length in seconds, read in this browser (null if it can't tell, e.g. a format it can't play). */
+function videoLengthOf(file) {
+  return new Promise((resolve) => {
+    const v = document.createElement('video');
+    const url = URL.createObjectURL(file);
+    let done = false;
+    const finish = (x) => { if (done) return; done = true; URL.revokeObjectURL(url); v.removeAttribute('src'); resolve(x); };
+    v.preload = 'metadata';
+    v.muted = true;
+    v.onloadedmetadata = () => finish(isFinite(v.duration) && v.duration > 0 ? v.duration : null);
+    v.onerror = () => finish(null);
+    setTimeout(() => finish(null), 15000);
+    v.src = url;
+  });
+}
+
 async function uploadFiles(fileList) {
   const files = [...fileList];
   if (!files.length) return;
@@ -577,10 +606,12 @@ async function uploadFiles(fileList) {
     row.innerHTML = `<span class="grow" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(file.name)}</span><div class="bar"><i></i></div><span class="pct muted">0%</span>`;
     box && box.appendChild(row);
     try {
-      await uploadInPieces(file, (p) => {
+      const m = await uploadInPieces(file, (p) => {
         $('i', row).style.width = p + '%';
         $('.pct', row).textContent = p + '%';
       });
+      // Record the video's length, so screens can play it in sync from its very first showing.
+      if (m && m.type === 'video') { const len = await videoLengthOf(file); if (len) await api('PUT', '/api/media/' + m.id, { name: m.name, length: len }).catch(() => {}); }
       ok++;
       row.remove();
     } catch (e) {
@@ -769,6 +800,7 @@ function plEditor() {
       <input type="text" class="title-input grow" id="pl-name" value="${esc(p.name)}" aria-label="Playlist name">
       <label class="row small muted" style="gap:6px">Transition <select id="pl-transition" style="width:auto"><option value="fade">Crossfade</option><option value="none" ${p.transition === 'none' ? 'selected' : ''}>Cut</option></select></label>
       <label class="row small muted" style="gap:6px" title="${ONCE_HINT}">At the end <select id="pl-end" style="width:auto"><option value="loop">Loop</option><option value="once" ${p.playOnce ? 'selected' : ''}>Play once</option></select></label>
+      <label class="row small muted" style="gap:6px" title="${SYNC_HINT}">Screens <select id="pl-sync" style="width:auto"><option value="on">In sync</option><option value="off" ${p.sync === false ? 'selected' : ''}>Each on its own</option></select></label>
       ${spotifyOn() ? `<label class="row small muted" style="gap:6px" title="What the Spotify background music does while this playlist is on a screen with sound">Music <select id="pl-music" style="width:auto">${Object.entries(MUSIC_LABEL).map(([k, v]) => `<option value="${k}" ${(p.music || 'keep') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>` : ''}
     </div>
     ${isAdminUser() ? `<div class="used-by" style="padding-left:6px">${used ? esc(used) : 'Not used by any screen or schedule yet.'}</div>` : ''}
@@ -818,6 +850,7 @@ function setDirty(v = true) {
   if (t && plDraft) t.textContent = lengthLabel(plDraft);
 }
 const lengthLabel = (p) => (p.playOnce ? 'Plays once: ' : 'Loop length: ') + playlistLength(p);
+const SYNC_HINT = 'In sync: every screen showing this playlist plays it in step, and screens in the same room change items together. Each on its own: every screen plays it at its own pace, as before.';
 const ONCE_HINT = 'Plays through once each time a schedule or takeover starts it, then the screen goes back to what it would otherwise show. Used as a screen’s default playlist, it still loops.';
 function rerenderItems() {
   $('#pl-editor').innerHTML = plEditor();
@@ -829,6 +862,7 @@ function bindPlEditor() {
   if (!list) return;
   $('#pl-name').addEventListener('input', (e) => { plDraft.name = e.target.value; setDirty(); });
   $('#pl-transition').addEventListener('change', (e) => { plDraft.transition = e.target.value; setDirty(); });
+  $('#pl-sync').addEventListener('change', (e) => { plDraft.sync = e.target.value !== 'off'; setDirty(); });
   $('#pl-end').addEventListener('change', (e) => { plDraft.playOnce = e.target.value === 'once'; $('#pl-once-hint').hidden = !plDraft.playOnce; setDirty(); });
   $('#pl-music')?.addEventListener('change', (e) => { plDraft.music = e.target.value; setDirty(); rerenderItems(); });
   list.addEventListener('input', (e) => {
@@ -1624,7 +1658,7 @@ const ACTIONS = {
     const id = plDraft.id;
     // loadedAt lets the server keep folder files that arrived after this copy was loaded. The folder link isn't sent:
     // it's only ever changed through the folder dialog.
-    await mutate(() => api('PUT', '/api/playlists/' + id, { name: plDraft.name, transition: plDraft.transition, playOnce: !!plDraft.playOnce, music: plDraft.music, items: plDraft.items, loadedAt: plDraft._loadedAt }), 'Playlist saved — screens update within a few seconds');
+    await mutate(() => api('PUT', '/api/playlists/' + id, { name: plDraft.name, transition: plDraft.transition, playOnce: !!plDraft.playOnce, sync: plDraft.sync !== false, music: plDraft.music, items: plDraft.items, loadedAt: plDraft._loadedAt }), 'Playlist saved — screens update within a few seconds');
     plDraft = loadDraft(id);
     plDirty = false;
     render();
@@ -1634,7 +1668,7 @@ const ACTIONS = {
   },
   'pl-duplicate': async () => {
     if (plDirty) return toast('Save your changes first', 'error');
-    const p = await mutate(() => api('POST', '/api/playlists', { name: plDraft.name + ' (copy)', transition: plDraft.transition, playOnce: !!plDraft.playOnce, music: plDraft.music, folder: plDraft.folder || null, items: plDraft.items.map((i) => ({ ...i, id: undefined })) }), 'Duplicated');
+    const p = await mutate(() => api('POST', '/api/playlists', { name: plDraft.name + ' (copy)', transition: plDraft.transition, playOnce: !!plDraft.playOnce, sync: plDraft.sync !== false, music: plDraft.music, folder: plDraft.folder || null, items: plDraft.items.map((i) => ({ ...i, id: undefined })) }), 'Duplicated');
     selectedPl = p.id; plDraft = null; render();
   },
   'pl-delete': async () => {
