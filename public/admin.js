@@ -376,6 +376,8 @@ function spotifyCard() {
         <label class="field"><span>Fade (seconds)</span><input type="number" name="fadeSeconds" min="0" max="10" step="0.5" value="${esc(sp.fadeSeconds)}"></label>
         <label class="field"><span>Resume after (seconds)</span><input type="number" name="resumeDelaySeconds" min="0" max="60" value="${esc(sp.resumeDelaySeconds)}"><div class="hint">Wait this long after the video, so back-to-back videos don’t make the music flicker.</div></label>
       </div>
+      <div class="field" style="margin-bottom:14px"><span class="field-label">After a video</span><label class="check"><input type="checkbox" name="keepTrying" ${sp.keepTrying !== false ? 'checked' : ''}> Keep trying to resume the music</label>
+        <div class="hint">If the music won’t start again (for example Spotify on an iPad has gone to sleep), keep trying for about 3½ minutes. Turn off to try just once.</div></div>
       <div class="row"><button class="btn primary" type="submit">Save music settings</button><button class="btn" type="button" data-action="sp-control" data-a="test">Test: pause for 10 seconds</button></div>
     </form>
     <p class="muted small" style="margin-top:12px">Only screens with <b>Play video sound</b> turned on pause the music. If the TV that plays a video has its sound off, the music keeps going. The device’s volume must be controllable from Spotify for fades; otherwise it simply pauses.</p>
@@ -1456,7 +1458,7 @@ AFTER.setup = () => {
   $('#sp-settings')?.addEventListener('submit', (e) => {
     e.preventDefault();
     const f = e.target;
-    mutate(() => api('POST', '/api/spotify/settings', { enabled: f.enabled.checked, mode: f.mode.value, duckPercent: f.duckPercent.value, fadeSeconds: f.fadeSeconds.value, resumeDelaySeconds: f.resumeDelaySeconds.value }), 'Music settings saved').catch(() => {});
+    mutate(() => api('POST', '/api/spotify/settings', { enabled: f.enabled.checked, mode: f.mode.value, duckPercent: f.duckPercent.value, fadeSeconds: f.fadeSeconds.value, resumeDelaySeconds: f.resumeDelaySeconds.value, keepTrying: f.keepTrying.checked }), 'Music settings saved').catch(() => {});
   });
   $('#import-file').addEventListener('change', async (e) => {
     const file = e.target.files[0];

@@ -44,6 +44,7 @@ function createSpotify({ dataDir, log = console, getSchedules = () => [], isActi
     duckPercent: 15, // in duck mode: % of the normal volume
     fadeSeconds: 2,
     resumeDelaySeconds: 3,
+    keepTrying: true, // after a video, keep retrying for a few minutes if the music won't start again
     engaged: null, // what we changed, so it can be undone (persisted across restarts)
     resuming: null, // music we paused for a video and are still trying to start again (persisted too)
   };
@@ -293,7 +294,7 @@ function createSpotify({ dataDir, log = console, getSchedules = () => [], isActi
       let outcome;
       try { outcome = await tryResume(r); } catch (err) { outcome = 'retry'; r.lastProblem = err.message; }
       if (cfg.resuming !== r) return; // something else took over meanwhile
-      if (outcome === 'retry' && r.attempt <= RESUME_RETRY_SECONDS.length) {
+      if (outcome === 'retry' && cfg.keepTrying !== false && r.attempt <= RESUME_RETRY_SECONDS.length) {
         save();
         lastAction = `Trying to resume the music on ${r.deviceName} (attempt ${r.attempt} didn’t work; trying again in ${RESUME_RETRY_SECONDS[r.attempt - 1]} s)…`;
         resumeTimer = setTimeout(resumeAttempt, RESUME_RETRY_SECONDS[r.attempt - 1] * 1000);
@@ -440,6 +441,7 @@ function createSpotify({ dataDir, log = console, getSchedules = () => [], isActi
       duckPercent: cfg.duckPercent,
       fadeSeconds: cfg.fadeSeconds,
       resumeDelaySeconds: cfg.resumeDelaySeconds,
+      keepTrying: cfg.keepTrying !== false,
       engaged: cfg.engaged ? { touched: cfg.engaged.touched, deviceName: cfg.engaged.deviceName || '', mode: cfg.engaged.mode || cfg.mode, at: cfg.engaged.at } : null,
       holds: activeHolds().map(([id, h]) => ({ screenId: id, screen: screenName(id), item: h.label })),
       now: status,
@@ -461,6 +463,7 @@ function createSpotify({ dataDir, log = console, getSchedules = () => [], isActi
     if (b.duckPercent !== undefined) cfg.duckPercent = clamp(parseInt(b.duckPercent, 10) || 0, 0, 100);
     if (b.fadeSeconds !== undefined) cfg.fadeSeconds = clamp(+b.fadeSeconds || 0, 0, 10);
     if (b.resumeDelaySeconds !== undefined) cfg.resumeDelaySeconds = clamp(+b.resumeDelaySeconds || 0, 0, 60);
+    if (b.keepTrying !== undefined) { cfg.keepTrying = !!b.keepTrying; if (!cfg.keepTrying && cfg.resuming && cfg.resuming.attempt >= 1) stopResuming(); }
     save();
     evaluate();
   }
