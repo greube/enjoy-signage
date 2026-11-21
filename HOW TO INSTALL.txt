@@ -1,0 +1,37 @@
+HOW TO INSTALL ENJOY SIGNAGE
+============================
+
+Don't double-click install-windows.js or install-mac.js. Windows will say
+"There is no script engine for file extension .js". That's normal. The
+installer has to be started by Node.js, like this:
+
+1. Install Node.js first (the LTS version) from https://nodejs.org
+   (Once per computer. Version 18 or newer.)
+
+2. Open a terminal in this folder:
+
+   WINDOWS 11:  right-click an empty space in this folder
+                and choose "Open in Terminal".
+   WINDOWS 10:  click the folder's address bar at the top,
+                type  cmd  and press Enter.
+   MAC:         open Terminal (Cmd+Space, type Terminal, Return),
+                type  cd  and a space, drag this folder onto the
+                window, and press Return.
+   UBUNTU:      right-click in this folder and choose
+                "Open in Terminal".
+
+3. Type the line for your computer and press Enter:
+
+   WINDOWS:  node install-windows.js
+   MAC:      node install-mac.js
+   UBUNTU:   sudo bash install-ubuntu.sh
+
+The installer does the rest and opens the admin panel when it's finished.
+Full step-by-step guides are in the "docs" folder:
+INSTALL-WINDOWS.md, INSTALL-MAC.md and INSTALL-UBUNTU.md.
+
+Already installed? You don't need this folder to update. Use:
+   Windows:  Start > ENJOY Signage > Update ENJOY Signage
+   Mac:      node app/platform/mac/enjoy.js update
+             (in ~/Library/Application Support/ENJOY Signage)
+   Ubuntu:   sudo church-signage update

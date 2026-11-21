@@ -20,11 +20,11 @@ If you already run ENJOY Signage on this computer, Node.js is already installed.
 
 ## 2. Extract the download
 
-Right-click `enjoy-signage-1.10.1.zip` → **Extract All…** → **Extract**. Any folder is fine, for example *Downloads*. You can delete this folder after installing.
+Right-click the downloaded zip (for example `enjoy-signage-main.zip`) → **Extract All…** → **Extract**. Any folder is fine, for example *Downloads*. You can delete this folder after installing.
 
 ## 3. Run the installer
 
-1. Open the extracted **`enjoy-signage`** folder, the one containing `install-windows.js`.
+1. Open the extracted folder, the one containing `install-windows.js` (and a `HOW TO INSTALL.txt` with these same steps).
 2. Right-click an empty space in the folder and choose **Open in Terminal**.
    - On Windows 10: click the folder's address bar, type `cmd`, and press **Enter**.
 3. Type this and press **Enter**:

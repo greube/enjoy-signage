@@ -14,14 +14,14 @@ Works on **Ubuntu 22.04, 24.04 and 26.04 LTS**, desktop or server edition, inclu
 
 ## 2. Copy the files over
 
-Copy `enjoy-signage-1.10.1.tar.gz` to the Ubuntu computer, for example with a USB stick or by downloading it. Then open a **Terminal** (Ctrl+Alt+T) in that folder and extract it:
+Copy the download (for example `enjoy-signage-main.tar.gz`) to the Ubuntu computer, for example with a USB stick or by downloading it. Then open a **Terminal** (Ctrl+Alt+T) in that folder and extract it:
 
 ```bash
-tar -xzf enjoy-signage-1.10.1.tar.gz
-cd enjoy-signage
+tar -xzf enjoy-signage-main.tar.gz
+cd enjoy-signage-main
 ```
 
-> **Moving from the Windows version?** Copy the whole `data` folder from the Windows computer into this `enjoy-signage` folder before the next step. With the Windows installer it's in `AppData\Local\ENJOY Signage` (Start → ENJOY Signage → ENJOY Signage folder); with an older copy it sits next to `server.js`. The installer brings in all your screens, playlists, schedules and uploaded media automatically. TV links stay the same apart from the server address.
+> **Moving from the Windows version?** Copy the whole `data` folder from the Windows computer into the extracted folder (the one containing `install-ubuntu.sh`) before the next step. With the Windows installer it's in `AppData\Local\ENJOY Signage` (Start → ENJOY Signage → ENJOY Signage folder); with an older copy it sits next to `server.js`. The installer brings in all your screens, playlists, schedules and uploaded media automatically. TV links stay the same apart from the server address.
 
 ## 3. Install
 
@@ -134,8 +134,8 @@ It checks GitHub for a newer version and installs it. If the new version doesn't
 Or, from a download, extract the new version and run its installer:
 
 ```bash
-tar -xzf enjoy-signage-NEW.tar.gz
-cd enjoy-signage
+tar -xzf enjoy-signage-main.tar.gz
+cd enjoy-signage-main
 sudo bash install-ubuntu.sh
 ```
 

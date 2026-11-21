@@ -4,6 +4,8 @@ Self-hosted digital signage for the screens around the church. One computer runs
 
 ## Install it
 
+Don't double-click the installer files: Windows will say there's no script engine for `.js`. Start them with `node` as shown below (`HOW TO INSTALL.txt` has the same steps).
+
 First install **Node.js** (the LTS version from https://nodejs.org). Then run the installer for the computer that will be the server:
 
 | Server computer | Run this in this folder | Guide |
@@ -24,6 +26,7 @@ Each installer sets it up to run in the background and start by itself. It also 
 | | |
 |---|---|
 | `install-windows.js`, `install-mac.js`, `install-ubuntu.sh` | The installers |
+| `HOW TO INSTALL.txt` | Opens in Notepad when double-clicked, and says how to start the installer |
 | `server/` | The server: web API, schedules, uploads, accounts, drop folders, Spotify |
 | `public/` | The admin panel, the TV player and the sign-in page |
 | `platform/` | Helper files for each platform (Windows icon and shortcuts, the Mac app, Ubuntu commands and TV kiosk setup) and the updater |

@@ -16,12 +16,12 @@ Go to **https://nodejs.org**, download the **LTS** version (the *macOS Installer
 
 ## 2. Extract the download
 
-Double-click `enjoy-signage-1.10.1.zip` in Downloads. It extracts to an **`enjoy-signage`** folder. You can delete that folder after installing.
+Double-click the downloaded zip in Downloads (for example `enjoy-signage-main.zip`). It extracts to a folder such as **`enjoy-signage-main`**, the one containing `install-mac.js`. You can delete that folder after installing.
 
 ## 3. Run the installer
 
 1. Open **Terminal**: press Cmd+Space, type `Terminal`, and press Return.
-2. Type `cd ` (with a space after it), drag the **`enjoy-signage`** folder onto the Terminal window, and press Return.
+2. Type `cd ` (with a space after it), drag the extracted folder onto the Terminal window, and press Return.
 3. Type this and press Return:
 
    ```
