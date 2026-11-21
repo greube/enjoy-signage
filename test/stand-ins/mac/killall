@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Stand-in for killall: only logs.
+. "$(dirname "$0")/log.sh" killall "$@"

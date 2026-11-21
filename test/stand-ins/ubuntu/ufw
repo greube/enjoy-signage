@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Stand-in for ufw: "status" says active unless UFW_ACTIVE=0; allow/delete are logged and remembered.
+. "$(dirname "$0")/log.sh" ufw "$@"
+f=${STANDIN_RUN:-/run/systemd-stand-in}/ufw-rules.txt; mkdir -p "$(dirname "$f")"; touch "$f"
+case "$1" in
+  status) [ "${UFW_ACTIVE:-1}" = 1 ] && { echo "Status: active"; cat "$f"; } || echo "Status: inactive" ;;
+  allow) echo "$2 ALLOW Anywhere" >> "$f"; echo "Rule added" ;;
+  delete) [ "$2" = allow ] && { grep -vxF "$3 ALLOW Anywhere" "$f" > "$f.tmp"; mv "$f.tmp" "$f"; }; echo "Rule deleted" ;;
+esac

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Stand-in for notepad: logs the file it would show (the "problem" messages).
+. "$(dirname "$0")/log.sh" notepad "$@"
+{ echo "----- notepad $1"; cat "$1"; echo "-----"; } >> "${WINLOG:-/dev/null}"

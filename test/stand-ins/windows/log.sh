@@ -1,0 +1,3 @@
+# shared by the stand-ins: log.sh NAME ARGS...
+printf '%s %s' "$(date +%H:%M:%S)" "$1" >> "${WINLOG:-/dev/null}"; shift
+for a in "$@"; do printf ' [%s]' "$a" >> "${WINLOG:-/dev/null}"; done; echo >> "${WINLOG:-/dev/null}"

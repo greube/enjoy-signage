@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Stand-in for xattr: only logs.
+. "$(dirname "$0")/log.sh" xattr "$@"

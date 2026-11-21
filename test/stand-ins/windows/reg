@@ -1,0 +1,21 @@
+#!/usr/bin/env node
+// Stand-in for reg.exe: query / add / delete, kept in $WINREG (JSON). Shell-folder queries fail unless set,
+// so enjoy.js uses its fallbacks, like on a PC where reg.exe output can't be read.
+const fs = require('fs');
+const [op, key, ...rest] = process.argv.slice(2);
+fs.appendFileSync(process.env.WINLOG || '/dev/null', `${new Date().toTimeString().slice(0, 8)} reg ${process.argv.slice(2).map((a) => `[${a}]`).join(' ')}\n`);
+const file = process.env.WINREG; let db = {}; try { db = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+const opt = (n) => { const i = rest.indexOf(n); return i >= 0 ? rest[i + 1] : undefined; };
+const K = (key || '').toUpperCase();
+if (op === 'query') {
+  const vals = db[K]; const v = opt('/v');
+  if (!vals || (v !== undefined && !(v in vals))) { console.error('ERROR: The system was unable to find the specified registry key or value.'); process.exit(1); }
+  console.log(`\n${key}`); for (const [n, [t, d]] of Object.entries(vals)) if (v === undefined || n === v) console.log(`    ${n}    ${t}    ${d}`);
+  process.exit(0);
+} else if (op === 'add') {
+  db[K] = db[K] || {}; const v = opt('/v'); if (v !== undefined) db[K][v] = [opt('/t') || 'REG_SZ', opt('/d') || ''];
+} else if (op === 'delete') {
+  const v = opt('/v'); if (!db[K]) process.exit(1); if (v !== undefined) delete db[K][v]; else delete db[K];
+} else { console.error('stand-in reg: unsupported ' + op); process.exit(1); }
+if (file) fs.writeFileSync(file, JSON.stringify(db, null, 1));
+console.log('The operation completed successfully.');

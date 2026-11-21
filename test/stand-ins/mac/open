@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Stand-in for open: "open URL" logs the address; "open -e FILE" logs the file (the "problem" messages).
+. "$(dirname "$0")/log.sh" open "$@"
+if [ "$1" = -e ]; then { echo "----- TextEdit $2"; cat "$2"; echo "-----"; } >> "${MACLOG:-/dev/null}"
+else echo "$1" > "${MAC_HOME:-/tmp}/last-opened-url.txt"; fi

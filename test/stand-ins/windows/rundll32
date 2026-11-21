@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Stand-in for "rundll32 url.dll,FileProtocolHandler URL" (opening the browser): logs the address.
+. "$(dirname "$0")/log.sh" rundll32 "$@"
+echo "$2" > "${WIN_HOME:-/tmp}/last-opened-url.txt"

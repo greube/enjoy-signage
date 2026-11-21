@@ -1,0 +1,60 @@
+#!/usr/bin/env node
+'use strict';
+// Stand-in for launchctl: bootstrap/load, bootout/unload, print, kickstart, enable/disable, plus "reset" (stops all).
+// A loaded agent runs its ProgramArguments (dropping caffeinate), in a loop that restarts it after
+// ThrottleInterval seconds if it exits (KeepAlive), with its output going to StandardOutPath.
+const fs = require('fs');
+const { spawn } = require('child_process');
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.MACLOG || '/dev/null', `${new Date().toTimeString().slice(0, 8)} launchctl ${args.map((a) => `[${a}]`).join(' ')}\n`);
+const file = process.env.MACSTATE || '/tmp/launchd-stand-in.json';
+let st = { agents: {}, disabled: {} }; try { st = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+const save = () => fs.writeFileSync(file, JSON.stringify(st, null, 1));
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const label = (s) => String(s).split('/').pop();
+const byPlist = (p) => Object.keys(st.agents).find((l) => st.agents[l].plist === p);
+
+function parsePlist(p) {
+  const x = fs.readFileSync(p, 'utf8');
+  const un = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  const val = (k) => { const m = new RegExp(`<key>${k}</key>\\s*<(string|integer)>([^<]*)<`).exec(x); return m && un(m[2]); };
+  const block = (k, tag) => { const m = new RegExp(`<key>${k}</key>\\s*<${tag}>([\\s\\S]*?)</${tag}>`).exec(x); return m ? m[1] : ''; };
+  const program = [...block('ProgramArguments', 'array').matchAll(/<string>([^<]*)<\/string>/g)].map((m) => un(m[1]));
+  const env = {}; const e = block('EnvironmentVariables', 'dict'); const re = /<key>([^<]*)<\/key>\s*<string>([^<]*)<\/string>/g; let m;
+  while ((m = re.exec(e))) env[m[1]] = un(m[2]);
+  return { label: val('Label'), program, cwd: val('WorkingDirectory'), env, log: val('StandardOutPath'), throttle: +(val('ThrottleInterval') || 10) };
+}
+function start(plist) {
+  const a = parsePlist(plist);
+  if (st.disabled[a.label]) return 119; // "Service is disabled"
+  if (st.agents[a.label] && alive(st.agents[a.label].pid)) return 37; // "already loaded" (launchctl prints errno 37/5)
+  let program = a.program;
+  if (/caffeinate$/.test(program[0])) { program = program.slice(1); while (program[0] && program[0].startsWith('-')) program = program.slice(1); }
+  const loop = `while true; do "$@"; sleep ${a.throttle}; done`;
+  const out = a.log ? fs.openSync(a.log, 'a') : 'ignore';
+  const child = spawn('bash', ['-c', loop, 'launchd-agent', ...program], { cwd: a.cwd || '/', env: { PATH: process.env.PATH, HOME: process.env.HOME, ...a.env }, detached: true, stdio: ['ignore', out, out] });
+  child.unref();
+  st.agents[a.label] = { plist, pid: child.pid, program };
+  save(); return 0;
+}
+function stop(l) {
+  const a = st.agents[l]; if (!a) return 3; // "No such process"
+  try { process.kill(-a.pid, 'SIGTERM'); } catch {}
+  delete st.agents[l]; save(); return 0;
+}
+const [cmd, ...rest] = args;
+let code = 0;
+switch (cmd) {
+  case 'bootstrap': code = start(rest[1]); break;
+  case 'load': code = start(rest[rest.length - 1]); break;
+  case 'bootout': code = stop(label(rest[0])); break;
+  case 'unload': code = stop(byPlist(rest[rest.length - 1]) || ''); break;
+  case 'print': { const a = st.agents[label(rest[0])]; code = a && alive(a.pid) ? 0 : 113; if (!code) console.log(`${rest[0]} = {\n\tstate = running\n\tpid = ${a.pid}\n}`); break; }
+  case 'kickstart': { const l = label(rest[rest.length - 1]); const a = st.agents[l]; if (!a) { code = 113; break; }
+    if (rest.includes('-k')) { const plist = a.plist; stop(l); code = start(plist); } break; }
+  case 'enable': delete st.disabled[label(rest[0])]; save(); break;
+  case 'disable': st.disabled[label(rest[0])] = true; save(); break;
+  case 'reset': for (const l of Object.keys(st.agents)) stop(l); break;
+  default: console.error('stand-in launchctl: unsupported ' + cmd); code = 1;
+}
+process.exit(code);

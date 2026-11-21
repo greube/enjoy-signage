@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Stand-in for timedatectl show -p Timezone --value / set-timezone ZONE (checks the zone exists).
+. "$(dirname "$0")/log.sh" timedatectl "$@"
+case "$1" in
+  show) cat /etc/timezone 2>/dev/null || echo Etc/UTC ;;
+  set-timezone) [ -f "/usr/share/zoneinfo/$2" ] || { echo "Failed to set time zone: Invalid or unknown time zone" >&2; exit 1; }
+    echo "$2" > /etc/timezone; ln -sf "/usr/share/zoneinfo/$2" /etc/localtime ;;
+  list-timezones) cd /usr/share/zoneinfo && find . -type f | sed 's|^\./||' | sort ;;
+esac

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Stand-in for "defaults read/write com.apple.dock persistent-apps": the Dock is a text file.
+. "$(dirname "$0")/log.sh" defaults "$@"
+f="${MAC_HOME:-/tmp}/dock.txt"
+case "$1" in
+  read) [ -f "$f" ] && cat "$f" || { echo "The domain/default pair of ($2, $3) does not exist" >&2; exit 1; } ;;
+  write) [ "$4" = -array-add ] && echo "$5" >> "$f" ;;
+esac

@@ -1,0 +1,3 @@
+# The test tools stay in the repository but out of GitHub's zip/tarball downloads (which is what people install
+# from, and what the updater fetches).
+test/ export-ignore

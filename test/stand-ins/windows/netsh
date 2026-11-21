@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Stand-in for netsh advfirewall: remembers added rules in $WIN_HOME/firewall.txt.
+. "$(dirname "$0")/log.sh" netsh "$@"
+f="${WIN_HOME:-/tmp}/firewall.txt"; touch "$f"
+name=$(printf '%s\n' "$@" | sed -n 's/^name=//p')
+case "$3 $4" in
+  "firewall add") echo "$*" >> "$f"; echo Ok. ;;
+  "firewall delete") grep -vF "name=$name " "$f" > "$f.tmp"; mv "$f.tmp" "$f"; echo Ok. ;;
+  "firewall show") grep -F "name=$name " "$f" >/dev/null && { echo "Rule Name: $name"; grep -oE 'localport=[0-9]+' "$f" | tail -1 | sed 's/localport=/LocalPort: /'; } || { echo "No rules match the specified criteria."; exit 1; } ;;
+esac

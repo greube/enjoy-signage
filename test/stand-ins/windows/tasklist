@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Stand-in for tasklist /FI "PID eq n" /FO CSV /NH
+. "$(dirname "$0")/log.sh" tasklist "$@"
+pid=$(printf '%s\n' "$@" | sed -n 's/^PID eq //p')
+name=$(ps -o comm= -p "$pid" 2>/dev/null) && echo "\"$name.exe\",\"$pid\"" || echo 'INFO: No tasks are running which match the specified criteria.'

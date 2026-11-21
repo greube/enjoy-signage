@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Stand-in for systemctl: start/stop/restart/is-active/is-enabled/enable/disable/status/daemon-reload.
+. "$(dirname "$0")/log.sh" systemctl "$@"
+RUN=${STANDIN_RUN:-/run/systemd-stand-in}; mkdir -p "$RUN"
+quiet=0; now=0; args=()
+for a in "$@"; do case "$a" in --quiet|-q) quiet=1 ;; --now) now=1 ;; --*) ;; *) args+=("$a") ;; esac; done
+cmd=${args[0]:-}; svc=${args[1]:-}; svc=${svc%.service}
+unit=/etc/systemd/system/$svc.service; pidf=$RUN/$svc.pid; logf=/var/log/stand-in-$svc.log
+running() { [ -f "$pidf" ] && kill -0 "$(cat "$pidf")" 2>/dev/null; }
+key() { sed -n "s/^$1=//p" "$unit"; }
+start() {
+  running && return 0
+  [ -f "$unit" ] || { echo "Failed to start $svc.service: Unit $svc.service not found." >&2; return 5; }
+  local user cwd exec envs=() line f
+  user=$(key User | tail -1); cwd=$(key WorkingDirectory | tail -1); exec=$(key ExecStart | tail -1)
+  while IFS= read -r line; do envs+=("$line"); done < <(key Environment)
+  for f in $(key EnvironmentFile); do [ -f "${f#-}" ] && while IFS= read -r line; do [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] && envs+=("$line"); done < "${f#-}"; done
+  local sec; sec=$(key RestartSec | tail -1)
+  # runs "env VARS... EXEC" as the user in a loop (Restart=always)
+  setsid bash -c 'cd "$1" || exit 1; shift; while true; do runuser -u "$1" -- env -i PATH=/usr/local/bin:/usr/bin:/bin "${@:3}"; sleep "$2"; done' \
+    stand-in "${cwd:-/}" "${user:-root}" "${sec:-3}" "${envs[@]}" $exec >> "$logf" 2>&1 < /dev/null &
+  echo $! > "$pidf"
+}
+stop() { running && { kill -TERM -- "-$(cat "$pidf")" 2>/dev/null; sleep 0.3; }; rm -f "$pidf"; }
+case "$cmd" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; start ;;
+  is-active) running && { [ $quiet = 1 ] || echo active; } || { [ $quiet = 1 ] || echo inactive; exit 3; } ;;
+  is-enabled) [ -f "$RUN/$svc.enabled" ] && echo enabled || { echo disabled; exit 1; } ;;
+  enable) touch "$RUN/$svc.enabled"; if [ $now = 1 ]; then start; fi ;;
+  disable) rm -f "$RUN/$svc.enabled"; if [ $now = 1 ]; then stop; fi ;;
+  status) running && echo "● $svc.service - active (running), pid $(cat "$pidf")" || { echo "○ $svc.service - inactive (dead)"; exit 3; }; tail -n 10 "$logf" 2>/dev/null ;;
+  daemon-reload|"") ;;
+  *) echo "stand-in systemctl: ignoring $cmd" >&2 ;;
+esac

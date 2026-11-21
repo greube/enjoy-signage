@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Stand-in for taskkill /PID n [/T] [/F]: kills the process and (with /T) everything it started.
+. "$(dirname "$0")/log.sh" taskkill "$@"
+pid=""; tree=0
+while [ $# -gt 0 ]; do case "$1" in /PID) pid=$2; shift ;; /T) tree=1 ;; esac; shift; done
+[ -n "$pid" ] || exit 1
+kids() { for c in $(ps -o pid= --ppid "$1" 2>/dev/null); do kids "$c"; echo "$c"; done; }
+victims="$([ $tree = 1 ] && kids "$pid") $pid"
+kill -9 $victims 2>/dev/null || { echo "ERROR: The process \"$pid\" not found."; exit 128; }
+echo "SUCCESS: The process with PID $pid has been terminated."
