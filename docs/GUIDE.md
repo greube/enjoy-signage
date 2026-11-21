@@ -156,6 +156,12 @@ Also turn off screen blanking with `sudo raspi-config` → Display Options → S
 
 ---
 
+### Switching TVs on and off (testing)
+
+A test tool can switch Google TVs on and off from the server, the way Google's TV remote app on a phone does, with no Fully Kiosk PLUS licence. For now it's run by typing commands; see **[TV-POWER.md](TV-POWER.md)**. It will move into the admin panel once it has been tried on the real TVs.
+
+---
+
 ### Branding
 
 The ENJOY Signage wordmark (the ENJOY logo with SIGNAGE in Helvetica Bold) appears in the admin panel and on the TVs when nothing is scheduled and on the "Which screen is this?" picker. The browser tab shows the round ENJOY badge. The image files are in `public/brand/`.
