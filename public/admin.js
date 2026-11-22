@@ -971,6 +971,34 @@ function appliesOn(s, d) {
   return true;
 }
 
+/**
+ * Lays out one day's blocks so overlapping ones stay readable (as Google Calendar does):
+ *  - blocks starting at about the same time (within 45 minutes) sit side by side, lower priority on the left
+ *  - a block starting later than one it overlaps is indented a little and drawn on top of it, so both
+ *    names show and long background schedules stay wide
+ * Each block gets left/width (percent of the column) and a stacking level.
+ */
+function layoutDay(segs) {
+  const items = segs.map(([s, a, b]) => ({ s, a, b })).sort((x, y) => x.a - y.a || y.b - x.b);
+  const placed = [];
+  for (let i = 0; i < items.length;) {
+    const first = items[i];
+    const row = [first];
+    let j = i + 1;
+    while (j < items.length && items[j].a - first.a < 45 && items[j].a < first.b) row.push(items[j++]);
+    const under = placed.filter((o) => o.a <= first.a && first.a < o.b);
+    const level = under.length ? Math.max(...under.map((o) => o.level)) + 1 : 0;
+    const left = Math.min(level * 8, 32);
+    const w = (100 - left) / row.length;
+    row.sort((x, y) => (x.s.priority || 0) - (y.s.priority || 0) || x.a - y.a);
+    row.forEach((it, k) => { Object.assign(it, { level, left: left + k * w, width: w }); placed.push(it); });
+    i = j;
+  }
+  // How long each block shows before another is drawn over it, so only the lines that fit are written.
+  for (const it of items) it.room = Math.min(it.b, ...items.filter((o) => o.level > it.level && o.a > it.a && o.a < it.b && o.left < it.left + it.width && it.left < o.left + o.width).map((o) => o.a)) - it.a;
+  return items;
+}
+
 function weekView(o = {}) {
   const label = o.label || ((s) => playlist(s.playlistId)?.name || '');
   const colorOf = o.color || schedColor;
@@ -996,14 +1024,16 @@ function weekView(o = {}) {
       }
       if (st > en && en > 0 && appliesOn(s, prev)) segs.push([s, 0, en]);
     }
-    segs.sort((a, b) => (a[0].priority || 0) - (b[0].priority || 0) || a[1] - b[1]);
-    const placed = [];
-    const blocks = segs.map(([s, a, b]) => {
-      const overlap = placed.filter(([pa, pb]) => pa < b && a < pb).length;
-      placed.push([a, b]);
-      const tip = tipOf(s);
-      return `<div class="blk" data-action="${action}" data-id="${s.id}" title="${esc(tip)}" style="top:${(a / 60) * HOUR}px;height:${Math.max(14, ((b - a) / 60) * HOUR - 1)}px;background:${colorOf(s)};left:${3 + overlap * 10}px;z-index:${10 + overlap}">
-        <b>${esc(s.name)}</b>${(b - a) >= 60 ? esc(label(s)) : ''}</div>`;
+    const blocks = layoutDay(segs).map((it) => {
+      const { s, a, b } = it;
+      const h = ((b - a) / 60) * HOUR;
+      const room = (it.room / 60) * HOUR; // visible height before another block covers it
+      const cls = (a === 0 && toMin(s.startTime) > 0 ? ' from-prev' : '') + (b === 1440 && toMin(s.endTime) > 0 && toMin(s.endTime) < toMin(s.startTime) ? ' to-next' : '');
+      const when = toMin(s.startTime) === toMin(s.endTime) ? 'All day' : `${fmtTime(s.startTime)}–${fmtTime(s.endTime)}`;
+      const sub = label(s);
+      return `<div class="blk${cls}${h < 30 ? ' tiny' : ''}${it.level ? ' over' : ''}" data-action="${action}" data-id="${s.id}" title="${esc(tipOf(s))}"
+        style="--c:${colorOf(s)};top:${(a / 60) * HOUR}px;height:${Math.max(16, h - 2)}px;left:calc(${it.left.toFixed(2)}% + 2px);width:calc(${it.width.toFixed(2)}% - 4px);z-index:${10 + it.level}">
+        <b>${esc(s.name)}</b>${room >= 44 ? `<span>${esc(when)}</span>` : ''}${room >= 60 && sub ? `<span>${esc(sub)}</span>` : ''}</div>`;
     }).join('');
     const isToday = ymd(d) === ymd(now);
     const line = isToday ? `<div class="nowline" style="top:${((now.getHours() * 60 + now.getMinutes()) / 60) * HOUR}px"></div>` : '';
@@ -1017,7 +1047,7 @@ function weekView(o = {}) {
     <div class="hours" style="height:${24 * HOUR}px">${hours}</div>
     ${cols.map((c) => c.html).join('')}
   </div>
-  <div class="legend-note">${scheds.length ? (o.note || 'Blocks further right are higher priority and win where they overlap. Click a block to edit it.') : (o.empty || 'Nothing is scheduled this week — screens will play their default playlists.')}</div>`;
+  <div class="legend-note">${scheds.length ? (o.note || 'Where schedules overlap, the one with the higher priority wins. Point at a block to see its priority, or click it to edit it.') : (o.empty || 'Nothing is scheduled this week — screens will play their default playlists.')}</div>`;
 }
 
 function schedForm(s = {}) {
