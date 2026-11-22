@@ -1105,15 +1105,16 @@ function weekView(o = {}) {
 const isAllDay = (s) => !!s.startTime && (s.startTime === s.endTime || (toMin(s.startTime) === 0 && toMin(s.endTime) >= 1439));
 
 /** Start and end time fields, with an "All day" tick box that hides them. */
-function timeFields(s, defStart, defEnd, hint = '') {
+function timeFields(s, defStart, defEnd, hint = '', { startLabel = 'Start time', endLabel = 'End time', allDayHint = '' } = {}) {
   const all = isAllDay(s);
   const t = (v, d) => esc(all || !v ? d : v);
   return `
-    <div class="field"><label class="check"><input type="checkbox" name="allDay" data-allday ${all ? 'checked' : ''}> All day</label></div>
+    <div class="field"><label class="check"><input type="checkbox" name="allDay" data-allday ${all ? 'checked' : ''}> All day</label>
+      ${allDayHint ? `<div class="hint" data-allday-hint ${all ? '' : 'hidden'}>${esc(allDayHint)}</div>` : ''}</div>
     <div data-times ${all ? 'hidden' : ''}>
       <div class="grid2">
-        <label class="field"><span>Start time</span><input type="time" name="startTime" value="${t(s.startTime, defStart)}"></label>
-        <label class="field"><span>End time</span><input type="time" name="endTime" value="${t(s.endTime, defEnd)}"></label>
+        <label class="field"><span>${esc(startLabel)}</span><input type="time" name="startTime" value="${t(s.startTime, defStart)}"></label>
+        <label class="field"><span>${esc(endLabel)}</span><input type="time" name="endTime" value="${t(s.endTime, defEnd)}"></label>
       </div>
       ${hint ? `<div class="hint" style="margin:-8px 0 14px">${esc(hint)}</div>` : ''}
     </div>`;
@@ -1128,6 +1129,8 @@ document.addEventListener('change', (e) => {
   if (!e.target.matches('[data-allday]')) return;
   const box = $('[data-times]', e.target.closest('form'));
   if (box) box.hidden = e.target.checked;
+  const hint = $('[data-allday-hint]', e.target.closest('form'));
+  if (hint) hint.hidden = !e.target.checked;
 });
 
 function schedForm(s = {}) {
@@ -1527,11 +1530,9 @@ function psForm(p = {}) {
         <button type="button" class="btn sm ghost" data-days="0,6">Weekends</button>
       </div>
     </div>
-    <div class="grid2">
-      <label class="field"><span>Switch on at</span><input type="time" name="startTime" value="${esc(p.startTime || '08:00')}" required></label>
-      <label class="field"><span>Switch off at</span><input type="time" name="endTime" value="${esc(p.endTime || '13:30')}" required></label>
-    </div>
-    <div class="hint" style="margin:-8px 0 14px">An off time earlier than the on time switches off the next day.</div>
+    ${timeFields(p, '08:00', '13:30', 'An off time earlier than the on time switches off the next day.', {
+      startLabel: 'Switch on at', endLabel: 'Switch off at',
+      allDayHint: 'TVs switch on at 12am and off at midnight. On days next to each other, they stay on overnight.' })}
     <div class="grid2">
       <label class="field"><span>From date <em class="muted">(optional)</em></span><input type="date" name="startDate" value="${esc(p.startDate || '')}"></label>
       <label class="field"><span>Until date <em class="muted">(optional)</em></span><input type="date" name="endDate" value="${esc(p.endDate || '')}"></label>
@@ -1547,9 +1548,10 @@ function psBody(f) {
   const allScreens = f.allScreens.checked;
   const screenIds = checkedValues(f, 'screenIds');
   if (!allScreens && !screenIds.length) throw new Error('Pick at least one TV');
-  if (v.startTime === v.endTime) throw new Error('The on and off times are the same');
+  const times = timesFrom(f);
+  if (!f.allDay.checked && times.startTime === times.endTime) throw new Error('The on and off times are the same. For on all day, tick All day.');
   if (v.startDate && v.endDate && v.endDate < v.startDate) throw new Error('The until date is before the from date');
-  return { name: v.name, allScreens, screenIds, days, startTime: v.startTime, endTime: v.endTime, startDate: v.startDate, endDate: v.endDate, enabled: f.enabled.checked };
+  return { name: v.name, allScreens, screenIds, days, ...times, startDate: v.startDate, endDate: v.endDate, enabled: f.enabled.checked };
 }
 
 function openPowerSchedule(p, { copy = false } = {}) {

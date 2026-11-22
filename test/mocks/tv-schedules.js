@@ -172,6 +172,19 @@ async function run(tvs, until) {
     ok(calls.length === 0, 'and it doesn’t suddenly switch later once the TV is back');
   }
 
+  console.log('\nAll day (stored as the same on and off time): Sat and Sun, then Wed on its own');
+  {
+    calls.length = 0; clock = at(2026, 11, 20, 12, 0); // a Friday
+    const { tvs } = setup({ screens: [screens[0]], schedules: [sched({ startTime: '00:00', endTime: '00:00', days: [6, 0, 3] })], pairedAt: clock });
+    await run(tvs, at(2026, 11, 27, 12, 0));
+    console.log('    ', show(calls));
+    ok(show(calls) === 'Sat 00:00 on, Mon 00:00 off, Wed 00:00 on, Thu 00:00 off', 'on at the start of Saturday, staying on through to the end of Sunday; Wednesday on its own');
+    calls.length = 0; clock = at(2026, 11, 22, 12, 0); // created at Sunday noon, in the middle of an all-day Sunday
+    const { tvs: t2 } = setup({ screens: [screens[0]], schedules: [sched({ startTime: '00:00', endTime: '00:00', days: [0], changedAt: clock })], pairedAt: at(2026, 11, 1, 0, 0) });
+    await run(t2, at(2026, 11, 23, 1, 0));
+    ok(show(calls) === 'Mon 00:00 off', `made at noon on the day: nothing until it switches off at midnight (${show(calls)})`);
+  }
+
   console.log('\nDaylight saving (Melbourne): the clocks go back on Sun 5 Apr 2026 and forward on Sun 4 Oct 2026');
   {
     calls.length = 0; clock = at(2026, 4, 3, 12, 0);

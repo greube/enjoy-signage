@@ -36,6 +36,7 @@ Switching usually takes a second or two. Some TVs ignore the on-only and off-onl
 - A schedule only acts at its on and off moments. In between, anyone can still switch a TV by hand, and the schedule won't undo it.
 - Where schedules overlap on the same TV, it's switched on when the first one starts and off when the last one ends.
 - An off time earlier than the on time switches off the next day (overnight).
+- **All day** switches the TVs on at 12am and off at midnight. If the next day is ticked too (e.g. Saturday and Sunday), they stay on through the night and switch off at the end of the last day.
 - For a one-off event, set both dates to the same day.
 - **If the server was off** when a TV should have switched (a power cut, an update), it catches up as soon as it starts again. Only the latest moment counts, so a server that was off all day doesn't switch TVs on and off again.
 - **If a TV can't be reached**, the server tries again every minute for an hour, then gives up until the next moment and says so on the TV power page.
