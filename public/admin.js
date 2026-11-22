@@ -1101,6 +1101,35 @@ function weekView(o = {}) {
   <div class="legend-note">${scheds.length ? (o.note || 'Where schedules overlap, the one with the higher priority wins. Point at a block to see its priority, or click it to edit it.') : (o.empty || 'Nothing is scheduled this week — screens will play their default playlists.')}</div>`;
 }
 
+/** A whole-day schedule: the same start and end time (how the server stores "all day"), or midnight to 11:59pm. */
+const isAllDay = (s) => !!s.startTime && (s.startTime === s.endTime || (toMin(s.startTime) === 0 && toMin(s.endTime) >= 1439));
+
+/** Start and end time fields, with an "All day" tick box that hides them. */
+function timeFields(s, defStart, defEnd, hint = '') {
+  const all = isAllDay(s);
+  const t = (v, d) => esc(all || !v ? d : v);
+  return `
+    <div class="field"><label class="check"><input type="checkbox" name="allDay" data-allday ${all ? 'checked' : ''}> All day</label></div>
+    <div data-times ${all ? 'hidden' : ''}>
+      <div class="grid2">
+        <label class="field"><span>Start time</span><input type="time" name="startTime" value="${t(s.startTime, defStart)}"></label>
+        <label class="field"><span>End time</span><input type="time" name="endTime" value="${t(s.endTime, defEnd)}"></label>
+      </div>
+      ${hint ? `<div class="hint" style="margin:-8px 0 14px">${esc(hint)}</div>` : ''}
+    </div>`;
+}
+/** The times to save: all day is stored as the same start and end time. */
+function timesFrom(f) {
+  if (f.allDay && f.allDay.checked) return { startTime: '00:00', endTime: '00:00' };
+  if (!f.startTime.value || !f.endTime.value) throw new Error('Choose a start and end time, or tick All day');
+  return { startTime: f.startTime.value, endTime: f.endTime.value };
+}
+document.addEventListener('change', (e) => {
+  if (!e.target.matches('[data-allday]')) return;
+  const box = $('[data-times]', e.target.closest('form'));
+  if (box) box.hidden = e.target.checked;
+});
+
 function schedForm(s = {}) {
   const days = s.days || [0, 1, 2, 3, 4, 5, 6];
   return `
@@ -1118,11 +1147,7 @@ function schedForm(s = {}) {
         <button type="button" class="btn sm ghost" data-days="0,6">Weekends</button>
       </div>
     </div>
-    <div class="grid2">
-      <label class="field"><span>Start time</span><input type="time" name="startTime" value="${esc(s.startTime || '09:00')}" required></label>
-      <label class="field"><span>End time</span><input type="time" name="endTime" value="${esc(s.endTime || '12:00')}" required></label>
-    </div>
-    <div class="hint" style="margin:-8px 0 14px">An end time earlier than the start runs overnight. The same start and end time means all day.</div>
+    ${timeFields(s, '09:00', '12:00', 'An end time earlier than the start runs overnight.')}
     <div class="grid2">
       <label class="field"><span>From date <em class="muted">(optional)</em></span><input type="date" name="startDate" value="${esc(s.startDate || '')}"></label>
       <label class="field"><span>Until date <em class="muted">(optional)</em></span><input type="date" name="endDate" value="${esc(s.endDate || '')}"></label>
@@ -1143,7 +1168,7 @@ function schedBody(f) {
   if (!allScreens && !screenIds.length) throw new Error('Pick at least one screen');
   if (v.startDate && v.endDate && v.endDate < v.startDate) throw new Error('The until date is before the from date');
   if (!v.playlistId) throw new Error('Choose a playlist');
-  return { name: v.name, playlistId: v.playlistId, allScreens, screenIds, days, startTime: v.startTime, endTime: v.endTime, startDate: v.startDate, endDate: v.endDate, priority: +v.priority || 0, enabled: f.enabled.checked };
+  return { name: v.name, playlistId: v.playlistId, allScreens, screenIds, days, ...timesFrom(f), startDate: v.startDate, endDate: v.endDate, priority: +v.priority || 0, enabled: f.enabled.checked };
 }
 document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-days]');
@@ -1326,10 +1351,7 @@ function musicScheduleForm(m = {}) {
         <button type="button" class="btn sm ghost" data-days="0">Sundays</button>
       </div>
     </div>
-    <div class="grid2">
-      <label class="field"><span>Start time</span><input type="time" name="startTime" value="${esc(m.startTime || '09:00')}" required></label>
-      <label class="field"><span>End time</span><input type="time" name="endTime" value="${esc(m.endTime || '09:55')}" required></label>
-    </div>
+    ${timeFields(m, '09:00', '09:55')}
     <div class="grid2">
       <label class="field"><span>From date <em class="muted">(optional)</em></span><input type="date" name="startDate" value="${esc(m.startDate || '')}"></label>
       <label class="field"><span>Until date <em class="muted">(optional)</em></span><input type="date" name="endDate" value="${esc(m.endDate || '')}"></label>
@@ -1359,7 +1381,7 @@ async function musicScheduleBody(f) {
     playlistName = p ? p.name : undefined;
   }
   const opt = f.device.selectedOptions[0];
-  const body = { name: v.name, uri, deviceName: v.device, deviceId: v.device ? opt.dataset.id || '' : '', days, startTime: v.startTime, endTime: v.endTime, startDate: v.startDate, endDate: v.endDate, volume: v.volume, shuffle: v.shuffle, atEnd: v.atEnd, priority: +v.priority || 0, enabled: f.enabled.checked };
+  const body = { name: v.name, uri, deviceName: v.device, deviceId: v.device ? opt.dataset.id || '' : '', days, ...timesFrom(f), startDate: v.startDate, endDate: v.endDate, volume: v.volume, shuffle: v.shuffle, atEnd: v.atEnd, priority: +v.priority || 0, enabled: f.enabled.checked };
   if (playlistName !== undefined) body.playlistName = playlistName;
   if (v.startDate && v.endDate && v.endDate < v.startDate) throw new Error('The until date is before the from date');
   return body;

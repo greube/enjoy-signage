@@ -102,7 +102,7 @@ Everyone signs in with their own username and password. TV player links never ne
 Schedule tips:
 
 - An end time earlier than the start time runs overnight, e.g. 22:00 → 02:00.
-- The same start and end time means all day.
+- For a schedule that runs the whole day, tick **All day** instead of entering times. (Music schedules have it too.)
 - For a one-off event, set both dates to the same day.
 - **This week**, at the top of the Schedules page, shows the week as a calendar:
   - schedules that run the whole day (e.g. 12am–11:59pm) are listed in the **All day** row at the top, not in the grid
