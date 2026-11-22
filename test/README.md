@@ -26,6 +26,8 @@ work on a Mac too.
 | `node test/browser/power-cut.js` | The server PC loses power mid-video and comes back. Then a refresh, then a browser restart with its cache kept. Expected: the player recovers within about a second of the server returning. `--original` uses the non-synced engine. | 2 min |
 | `node test/browser/stuck-video.js` | A browser whose download of a video is stuck. The player should notice and reload it from a fresh address, before and after F5. | 1 min |
 | `bash test/mocks/spotify-scenarios.sh` | Resuming music after a video, against a pretend Spotify whose iPad stays active, goes inactive, falls asleep and wakes, or disappears. Includes the "keep trying" toggle turned off. One case: `node test/mocks/spotify-drive.js asleep`. | 6 min |
+| `node test/browser/tv-power.js` | TV power end to end, with two pretend TVs (one ignores the on/off-only keys): pairing in the admin panel with a mistyped code first, On/Off, All TVs on/off, a power schedule switching both TVs on and off on the minute, an unplugged TV, forgetting a TV. | 3 min |
+| `node test/mocks/tv-schedules.js` | Power schedule timing with a pretend clock: a normal Sunday, switching by hand in between, overlaps, overnight, a server that was off at the moment (catch-up), new schedules not acting on the past, an unreachable TV (retries, then gives up), and Melbourne daylight saving. | 2 s |
 | `bash test/platform/windows-install.sh` | The Windows install on Linux, with stand-in Windows commands and a throwaway profile. Covers icons, Start menu, start at sign-in, the Apps-list entry, restart, crash recovery, stop, open and uninstall. | 30 s |
 | `bash test/platform/check-shortcuts.sh [folder]` | Reads the `.lnk` shortcuts back with an independent parser (LnkParse3, fetched from GitHub) and shows what Windows would see. | 5 s |
 | `bash test/platform/mac-install.sh` | The same for the Mac version, with a stand-in launchd that really runs the LaunchAgent. | 40 s |
@@ -48,6 +50,7 @@ scripts print ✓ or ✗ for each check and exit non-zero on any ✗.
   is one-sided, which skews clock-sync results.)
 - `mocks/spotify.js PORT MODE` is a pretend Spotify. Point the server at it with `SPOTIFY_ACCOUNTS_BASE` and
   `SPOTIFY_API_BASE`.
+- `mocks/tv.js HOST CONTROL-PORT` is a pretend Google TV on HOST:6466/6467 (use 127.0.0.2, 127.0.0.3 … for several). `GET :CONTROL-PORT/code` gives the pairing code it's showing; `/mode?unplugged=1`, `ignoreWake`, `noReport` and `delay` change how it behaves. The androidtvremote2 library (used by Home Assistant) pairs with it and controls it, which is how it was checked against the real protocol.
 - `mocks/github.js PORT [VERSION]` is a pretend GitHub that serves the working tree as a newer version. Point the
   updater at it with `ENJOY_SIGNAGE_UPDATE_API`, `ENJOY_SIGNAGE_UPDATE_RAW` and `ENJOY_SIGNAGE_UPDATE_CODELOAD`.
   Failure switches are listed in its header.

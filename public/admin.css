@@ -320,3 +320,17 @@ pre { background: var(--line-2); border: 1px solid var(--line); border-radius: 8
   .table .hide-sm { display: none; }
   .pl-item { flex-wrap: wrap; }
 }
+
+/* TV power */
+.tvdot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: var(--line-2); vertical-align: 0; }
+.tvdot.on { background: var(--ok); }
+.tvdot.off { background: var(--muted); }
+.tvdot.err { background: var(--warn); }
+.tvdot.busy { background: var(--accent); animation: tvpulse 1s infinite alternate; }
+@keyframes tvpulse { to { opacity: .3; } }
+.tv-line { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; }
+.tv-btns { margin-left: auto; display: inline-flex; gap: 4px; }
+.btn.xs { padding: 2px 9px; font-size: 12px; min-height: 0; }
+.warn-text { color: var(--warn); }
+.tv-status { margin-bottom: 12px; }
+.tv-msg { min-height: 1.4em; margin-top: 10px; }

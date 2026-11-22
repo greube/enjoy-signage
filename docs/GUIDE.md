@@ -8,6 +8,7 @@ A small, self-hosted alternative to Yodeck for running the screens around your c
 - **Takeover now.** One click pushes a playlist to some or all screens immediately, for a set time or until you stop it.
 - **Live status.** See which screens are online, what each is showing and why (default, schedule or takeover). **Identify** flashes a screen's name on the TV.
 - **Drop folders.** Link a playlist to a folder. Images and videos dropped into it go on the screens by themselves, and deleting a file takes it off.
+- **TV power.** Switch the Google TVs on and off from the admin panel, by hand or on a schedule.
 - **Background music.** Optional Spotify link: the church's music fades out and pauses while a chosen video plays with sound, then fades back in when it finishes.
 - **Robust players.** If the server or Wi-Fi drops, screens keep playing what they have and reconnect by themselves.
 - **No dependencies.** Only Node.js is needed: no database and no `npm install`. Data is a single JSON file plus an uploads folder.
@@ -156,9 +157,15 @@ Also turn off screen blanking with `sudo raspi-config` → Display Options → S
 
 ---
 
-### Switching TVs on and off (testing)
+### Switching TVs on and off
 
-A test tool can switch Google TVs on and off from the server, the way Google's TV remote app on a phone does, with no Fully Kiosk PLUS licence. For now it's run by typing commands; see **[TV-POWER.md](TV-POWER.md)**. It will move into the admin panel once it has been tried on the real TVs.
+The **TV power** page (administrators only) switches the Google TVs on and off, by hand or on a schedule, the same way Google's TV remote app on a phone does. No Fully Kiosk PLUS licence is needed.
+
+1. **Pair each TV once:** TV power → **Set up** next to the screen → type the TV's address (on the TV: Settings → Network & Internet) → **Pair** → type the code the TV shows.
+2. **By hand:** **On** / **Off** on the TV power page or on a screen's card, or **All TVs on** / **All TVs off**. Each TV shows whether it's on, in standby or can't be reached, and which app is in front.
+3. **Power schedules:** **+ Power schedule**, e.g. every Sunday, on at 8:00am and off at 1:30pm. Like music schedules, they only act at their on and off moments, so anyone can still switch a TV by hand in between. If the server was off at that moment, it catches up when it starts. A TV that can't be reached is tried every minute for an hour.
+
+Give each TV a fixed address in the router, and turn on its *network standby* setting if it has one. Full details, including what the messages mean: **[TV-POWER.md](TV-POWER.md)**.
 
 ---
 
@@ -314,4 +321,5 @@ API summary:
 - `POST /api/overrides` with `{playlistId, allScreens|screenIds, minutes}` starts a takeover (3 seconds later, so all screens start it together).
 - `DELETE /api/overrides/:id` stops a takeover.
 - `POST /api/folders` with `{name}` creates a drop folder. `POST /api/settings` with `{foldersDir}` changes where drop folders live. `server/folders.js` holds the scanning logic.
+- TV power: `POST /api/screens/:id/tv/pair` with `{host}` makes the TV show a code, then `POST /api/screens/:id/tv/code` with `{code}` finishes pairing. `POST /api/screens/:id/tv/power` with `{on}` switches one TV, `POST /api/tvs/power` with `{on}` all of them, and `/api/powerSchedules` manages power schedules. `server/tvs.js` holds the pairings and runs the schedules; `server/tvpower.js` speaks the Google TV remote protocol (pairing on port 6467, remote on 6466).
 - `POST /api/player/:id/music?hold=1|0` is what a player sends when an item that should pause the music starts or ends. `server/spotify.js` holds all the Spotify logic.

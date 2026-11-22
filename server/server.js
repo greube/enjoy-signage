@@ -21,10 +21,11 @@ const crypto = require('crypto');
 const { pipeline } = require('stream');
 const { URL } = require('url');
 const { createSpotify } = require('./spotify');
+const { createTvs } = require('./tvs');
 const { createFolders } = require('./folders');
 const { createAccounts, MAX_TRIES, LOCK_MS } = require('./accounts');
 
-const VERSION = '1.13.5';
+const VERSION = '1.14.0';
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, '..', 'data'));
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
@@ -61,7 +62,7 @@ const spotify = createSpotify({
 /* Storage                                                             */
 /* ------------------------------------------------------------------ */
 
-const EMPTY = () => ({ media: [], playlists: [], screens: [], schedules: [], overrides: [], musicSchedules: [], settings: {}, playedOnce: {} });
+const EMPTY = () => ({ media: [], playlists: [], screens: [], schedules: [], overrides: [], musicSchedules: [], powerSchedules: [], settings: {}, playedOnce: {} });
 let db = EMPTY();
 try {
   if (fs.existsSync(DB_FILE)) {
@@ -76,6 +77,13 @@ try {
 }
 
 const accounts = createAccounts({ dataDir: DATA_DIR, builtinPassword: ADMIN_PASSWORD });
+
+const tvs = createTvs({
+  dataDir: DATA_DIR,
+  getScreens: () => db.screens,
+  getSchedules: () => db.powerSchedules || [],
+  isActive: (s, now) => scheduleActive(s, now),
+});
 
 const folders = createFolders({
   defaultRoot: path.join(DATA_DIR, 'folders'),
@@ -546,6 +554,18 @@ function cleanScreen(b) {
     rotation: [0, 90, 180, 270].includes(+b.rotation) ? +b.rotation : 0,
     audio: !!b.audio,
     room: str(b.room, 60).trim(), // screens in the same room change items together
+    tvHost: /^[a-z0-9.\-]{0,253}$/i.test(String(b.tvHost || '').trim()) ? String(b.tvHost || '').trim() : '', // for TV power
+  };
+}
+
+function cleanPowerSchedule(b) {
+  const t = cleanSchedule(Object.assign({}, b, { playlistId: '' }));
+  return {
+    name: str(b.name, 200) || 'TVs on',
+    allScreens: t.allScreens, screenIds: t.screenIds,
+    days: t.days, startTime: t.startTime, endTime: t.endTime, startDate: t.startDate, endDate: t.endDate,
+    enabled: t.enabled,
+    changedAt: Date.now(), // a schedule only acts on its on/off moments after it was last changed
   };
 }
 
@@ -894,6 +914,8 @@ route('GET', '/api/state', (req, res) => {
     resolved,
     activeSchedules: db.schedules.filter((s) => scheduleActive(s, now)).map((s) => s.id),
     activeMusicSchedules: (db.musicSchedules || []).filter((s) => s.enabled && scheduleActive(s, now)).map((s) => s.id),
+    activePowerSchedules: (db.powerSchedules || []).filter((s) => s.enabled && scheduleActive(s, now)).map((s) => s.id),
+    tvs: tvs.info(),
     now: now.getTime(),
     tzOffset: now.getTimezoneOffset(),
     spotify: spotify.info(screenName),
@@ -1359,6 +1381,8 @@ crud('playlists', cleanPlaylist, (pl) => {
   db.overrides = db.overrides.filter((o) => o.playlistId !== pl.id);
 }, { editorCanSave: true });
 crud('screens', cleanScreen, (sc) => {
+  tvs.forget(sc.id, sc.tvHost);
+  for (const s of db.powerSchedules || []) s.screenIds = (s.screenIds || []).filter((id) => id !== sc.id);
   for (const s of db.schedules) s.screenIds = (s.screenIds || []).filter((id) => id !== sc.id);
   for (const o of db.overrides) o.screenIds = (o.screenIds || []).filter((id) => id !== sc.id);
   delete status[sc.id];
@@ -1366,6 +1390,50 @@ crud('screens', cleanScreen, (sc) => {
 });
 crud('schedules', cleanSchedule);
 crud('musicSchedules', cleanMusicSchedule);
+crud('powerSchedules', cleanPowerSchedule);
+
+/* TV power: pairing, on/off now. Power schedules are run by server/tvs.js. */
+const tvScreen = (id) => { const sc = byId(db.screens, id); if (!sc) throw httpError(404, 'Not found'); return sc; };
+route('POST', '/api/screens/:id/tv/pair', async (req, res, p) => {
+  const sc = tvScreen(p.id);
+  const host = str((await readJson(req)).host, 253).trim();
+  if (sc.tvHost && sc.tvHost !== host) tvs.forget(sc.id, sc.tvHost);
+  const out = await tvs.pairStart(sc.id, host);
+  if (sc.tvHost !== host) { sc.tvHost = host; save(); }
+  send(res, 200, out);
+});
+route('POST', '/api/screens/:id/tv/code', async (req, res, p) => {
+  const sc = tvScreen(p.id);
+  send(res, 200, await tvs.pairCode(sc.id, (await readJson(req)).code));
+});
+route('POST', '/api/screens/:id/tv/cancel', (req, res, p) => { tvs.pairCancel(tvScreen(p.id).id); send(res, 200, { ok: true }); });
+route('POST', '/api/screens/:id/tv/power', async (req, res, p) => {
+  const sc = tvScreen(p.id);
+  const on = !!(await readJson(req)).on;
+  send(res, 200, await tvs.power(sc.id, on, `by ${req.user.name || req.user.username}`));
+});
+route('POST', '/api/screens/:id/tv/check', async (req, res, p) => {
+  const sc = tvScreen(p.id);
+  if (!sc.tvHost) throw httpError(400, 'This screen has no TV set up');
+  send(res, 200, await tvs.check(sc.tvHost));
+});
+route('DELETE', '/api/screens/:id/tv', (req, res, p) => {
+  const sc = tvScreen(p.id);
+  tvs.forget(sc.id, sc.tvHost);
+  sc.tvHost = '';
+  save();
+  send(res, 200, { ok: true });
+});
+/* All TVs (or chosen ones) on or off at once. Answers with how each one went. */
+route('POST', '/api/tvs/power', async (req, res) => {
+  const b = await readJson(req);
+  const info = tvs.info();
+  const ids = (b.screenIds ? idList(b.screenIds, db.screens) : db.screens.map((x) => x.id)).filter((id) => info[id] && info[id].paired);
+  if (!ids.length) throw httpError(400, 'No paired TVs to switch');
+  const by = `by ${req.user.name || req.user.username}`;
+  const results = await Promise.all(ids.map((id) => tvs.power(id, !!b.on, by).then(() => ({ id, ok: true }), (e) => ({ id, ok: false, error: e.message }))));
+  send(res, 200, { results });
+});
 
 route('POST', '/api/screens/:id/identify', (req, res, p) => {
   if (!byId(db.screens, p.id)) throw httpError(404, 'Not found');
@@ -1452,6 +1520,7 @@ const server = http.createServer(async (req, res) => {
 server.requestTimeout = 0; // allow long uploads on slow Wi-Fi
 
 if (require.main === module) {
+  tvs.start();
   server.listen(PORT, '0.0.0.0', () => {
     const ips = lanAddresses();
     console.log(`\n  ENJOY Signage ${VERSION} is running\n`);

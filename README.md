@@ -19,7 +19,7 @@ Each installer sets it up to run in the background and start by itself. It also 
 ## Then
 
 - **Set up screens, playlists and schedules:** see [docs/GUIDE.md](docs/GUIDE.md). It covers drop folders, Spotify background music, user accounts and connecting each TV.
-- **Switch TVs on and off from the server (testing):** see [docs/TV-POWER.md](docs/TV-POWER.md).
+- **Switch the TVs on and off, by hand or on a schedule:** see [docs/TV-POWER.md](docs/TV-POWER.md).
 - **Use the admin panel from home:** see [docs/REMOTE-ACCESS.md](docs/REMOTE-ACCESS.md) (free Cloudflare Tunnel or Tailscale).
 
 ## What's in this folder
@@ -28,7 +28,7 @@ Each installer sets it up to run in the background and start by itself. It also 
 |---|---|
 | `install-windows.js`, `install-mac.js`, `install-ubuntu.sh` | The installers |
 | `HOW TO INSTALL.txt` | Opens in Notepad when double-clicked, and says how to start the installer |
-| `server/` | The server: web API, schedules, uploads, accounts, drop folders, Spotify, and the TV power test tool (`tvpower.js`) |
+| `server/` | The server: web API, schedules, uploads, accounts, drop folders, Spotify and TV power |
 | `public/` | The admin panel, the TV player and the sign-in page |
 | `platform/` | Helper files for each platform (Windows icon and shortcuts, the Mac app, Ubuntu commands and TV kiosk setup) and the updater |
 | `docs/` | The guides |

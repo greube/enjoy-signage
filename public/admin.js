@@ -8,7 +8,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 let S = { db: { media: [], playlists: [], screens: [], schedules: [], overrides: [] }, status: {}, resolved: {}, activeSchedules: [], now: Date.now(), info: { ips: [], port: 3000 } };
 let tab = (location.hash || '').slice(1);
 const isAdminUser = () => !!(S.me && S.me.role === 'admin');
-const ADMIN_TABS = ['screens', 'schedules', 'music', 'setup', 'users'];
+const ADMIN_TABS = ['screens', 'schedules', 'music', 'tv', 'setup', 'users'];
 const tabAllowed = (t) => !!VIEWS[t] && (isAdminUser() || !ADMIN_TABS.includes(t));
 const defaultTab = () => (isAdminUser() ? 'screens' : 'playlists');
 let selectedPl = null;
@@ -424,6 +424,7 @@ function screenCard(s) {
       <div class="meta">${online && st.item ? 'Showing “' + esc(st.item) + '”' : ''}${online && st.res ? ' · ' + esc(st.res) : ''}${r.until ? ' · until ' + fmtUntil(r.until) : ''}</div>
       ${r.note ? `<div class="meta">▶ ${esc(r.note)}</div>` : ''}
       ${syncLine(r, st, online)}
+      ${tvLine(s)}
     </div>
     ${st.error && online ? `<div class="warn-line">⚠ ${esc(st.error)}</div>` : ''}
     <div class="linkbox"><code title="${esc(playerUrl(s.id))}">${esc(playerUrl(s.id))}</code><button class="btn sm ghost" data-action="copy" data-text="${esc(playerUrl(s.id))}">Copy</button></div>
@@ -431,6 +432,7 @@ function screenCard(s) {
       <button class="btn sm" data-action="screen-edit" data-id="${s.id}">Edit</button>
       <button class="btn sm" data-action="screen-identify" data-id="${s.id}" ${online ? '' : 'disabled title="Screen is offline"'}>Identify</button>
       <a class="btn sm" href="/player/${s.id}" target="_blank" rel="noopener">Open player</a>
+      <button class="btn sm" data-action="tv-setup" data-id="${s.id}">TV power</button>
       <span class="grow"></span>
       <button class="btn sm ghost danger-text" data-action="screen-delete" data-id="${s.id}">Delete</button>
     </div>
@@ -973,6 +975,7 @@ function weekView(o = {}) {
   const label = o.label || ((s) => playlist(s.playlistId)?.name || '');
   const colorOf = o.color || schedColor;
   const action = o.action || 'sched-edit';
+  const tipOf = o.tip || ((s) => `${s.name} · ${label(s)} · ${fmtTime(s.startTime)}–${fmtTime(s.endTime)} · priority ${s.priority}`);
   const HOUR = 24; // px per hour
   const now = new Date(S.now);
   const monday = new Date(now);
@@ -993,12 +996,12 @@ function weekView(o = {}) {
       }
       if (st > en && en > 0 && appliesOn(s, prev)) segs.push([s, 0, en]);
     }
-    segs.sort((a, b) => a[0].priority - b[0].priority || a[1] - b[1]);
+    segs.sort((a, b) => (a[0].priority || 0) - (b[0].priority || 0) || a[1] - b[1]);
     const placed = [];
     const blocks = segs.map(([s, a, b]) => {
       const overlap = placed.filter(([pa, pb]) => pa < b && a < pb).length;
       placed.push([a, b]);
-      const tip = `${s.name} · ${label(s)} · ${fmtTime(s.startTime)}–${fmtTime(s.endTime)} · priority ${s.priority}`;
+      const tip = tipOf(s);
       return `<div class="blk" data-action="${action}" data-id="${s.id}" title="${esc(tip)}" style="top:${(a / 60) * HOUR}px;height:${Math.max(14, ((b - a) / 60) * HOUR - 1)}px;background:${colorOf(s)};left:${3 + overlap * 10}px;z-index:${10 + overlap}">
         <b>${esc(s.name)}</b>${(b - a) >= 60 ? esc(label(s)) : ''}</div>`;
     }).join('');
@@ -1014,7 +1017,7 @@ function weekView(o = {}) {
     <div class="hours" style="height:${24 * HOUR}px">${hours}</div>
     ${cols.map((c) => c.html).join('')}
   </div>
-  <div class="legend-note">${scheds.length ? 'Blocks further right are higher priority and win where they overlap. Click a block to edit it.' : (o.empty || 'Nothing is scheduled this week — screens will play their default playlists.')}</div>`;
+  <div class="legend-note">${scheds.length ? (o.note || 'Blocks further right are higher priority and win where they overlap. Click a block to edit it.') : (o.empty || 'Nothing is scheduled this week — screens will play their default playlists.')}</div>`;
 }
 
 function schedForm(s = {}) {
@@ -1297,6 +1300,230 @@ function openMusicSchedule(m, { copy = false } = {}) {
   toggle();
 }
 
+
+/* ---------- TV power ---------- */
+
+const tvInfo = (id) => (S.tvs || {})[id] || null;
+const APP_NAMES = { 'de.ozerov.fully': 'Fully Kiosk', 'com.google.android.tvlauncher': 'the Home screen', 'com.google.android.apps.tv.launcherx': 'the Home screen' };
+const appName = (a) => APP_NAMES[a] || a;
+const tvColor = (s) => COLORS[(S.db.powerSchedules || []).indexOf(s) % COLORS.length];
+const pairedTvs = () => S.db.screens.filter((s) => tvInfo(s.id)?.paired);
+
+/** "On", "In standby", "Can't reach" etc. for a screen's TV. */
+function tvState(t) {
+  if (!t) return { cls: 'none', text: 'No TV set up' };
+  if (!t.paired) return { cls: 'none', text: t.pairing ? 'Pairing…' : 'Not paired yet' };
+  if (t.busy) return { cls: 'busy', text: t.busy === 'on' ? 'Switching on…' : 'Switching off…' };
+  if (t.error) return { cls: 'err', text: 'Can’t reach the TV' };
+  if (t.on === true) return { cls: 'on', text: 'On' };
+  if (t.on === false) return { cls: 'off', text: 'In standby' };
+  return { cls: 'none', text: 'Checking…' };
+}
+
+function tvNext(t) {
+  if (!t || !t.next) return '';
+  const d = new Date(t.next.t);
+  const today = ymd(d) === ymd(new Date(S.now));
+  return `${t.next.on ? 'Switches on' : 'Switches off'} ${today ? '' : DAY_NAMES[d.getDay()] + ' '}${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+}
+
+/** The TV line on a screen card. */
+function tvLine(s) {
+  const t = tvInfo(s.id);
+  if (!t || !t.paired) return '';
+  const st = tvState(t);
+  const app = t.on && t.app ? ` · ${t.app === 'de.ozerov.fully' ? 'Fully Kiosk in front' : `<span class="warn-text">${esc(appName(t.app))} in front</span>`}` : '';
+  return `<div class="meta tv-line"><span class="tvdot ${st.cls}"></span>TV: ${esc(st.text)}${app}${tvNext(t) ? ` · <span class="muted">${esc(tvNext(t))}</span>` : ''}
+    <span class="tv-btns">${tvButtons(s.id, t)}</span></div>`;
+}
+
+function tvButtons(id, t) {
+  if (!t || !t.paired) return '';
+  const busy = t.busy ? 'disabled' : '';
+  return `<button class="btn xs" data-action="tv-power" data-id="${id}" data-on="1" ${busy} ${t.on === true ? 'title="Already on"' : ''}>On</button><button class="btn xs" data-action="tv-power" data-id="${id}" data-on="0" ${busy} ${t.on === false ? 'title="Already in standby"' : ''}>Off</button>`;
+}
+
+function tvRow(s) {
+  const t = tvInfo(s.id);
+  const st = tvState(t);
+  const lastLine = t && t.last ? `<div class="small ${t.last.error ? 'warn-text' : 'muted'}">${esc(t.last.text)} · ${esc(ago(S.now - t.last.at))}</div>` : '';
+  return `<tr>
+    <td><b>${esc(s.name)}</b><div class="muted small">${t ? esc(t.host) + (t.model ? ' · ' + esc(t.model) : '') : 'No TV address'}</div></td>
+    <td><span class="tvdot ${st.cls}"></span>${esc(st.text)}${t && t.paired && t.on && t.app ? `<div class="small ${t.app === 'de.ozerov.fully' ? 'muted' : 'warn-text'}">${esc(appName(t.app))} in front</div>` : ''}
+      ${t && t.error && t.paired && !(t.last && t.last.error) ? `<div class="small warn-text">${esc(t.error)}</div>` : ''}${lastLine}</td>
+    <td class="hide-sm small">${esc(tvNext(t)) || '<span class="muted">—</span>'}</td>
+    <td class="acts">${tvButtons(s.id, t)}${t && t.paired ? `<button class="btn sm ghost" data-action="tv-check" data-id="${s.id}" title="Ask the TV now">↻</button>` : ''}<button class="btn sm" data-action="tv-setup" data-id="${s.id}">${t && t.paired ? 'Settings' : 'Set up'}</button></td>
+  </tr>`;
+}
+
+function psRow(p) {
+  const active = (S.activePowerSchedules || []).includes(p.id);
+  const st = toMin(p.startTime), en = toMin(p.endTime);
+  const time = st === en ? 'All day' : `On ${fmtTime(p.startTime)} · off ${fmtTime(p.endTime)}${en < st ? ' (next day)' : ''}`;
+  const dates = p.startDate || p.endDate ? (p.startDate === p.endDate ? p.startDate : `${p.startDate || '…'} → ${p.endDate || '…'}`) : '';
+  return `<tr class="${p.enabled ? '' : 'off'}">
+    <td><span class="swatch" style="background:${tvColor(p)}"></span><b>${esc(p.name)}</b> ${active ? '<span class="badge live">● On now</span>' : ''}</td>
+    <td class="hide-sm">${p.allScreens ? 'All TVs' : targetLabel(p)}</td>
+    <td>${daysLabel(p.days)}<div class="muted small">${time}</div>${dates ? `<div class="muted small">${esc(dates)}</div>` : ''}</td>
+    <td><label class="toggle"><input type="checkbox" data-action="ps-toggle" data-id="${p.id}" ${p.enabled ? 'checked' : ''}><span></span></label></td>
+    <td class="acts">
+      <button class="btn sm" data-action="ps-edit" data-id="${p.id}">Edit</button>
+      <button class="btn sm ghost" data-action="ps-dup" data-id="${p.id}" title="Duplicate">⧉</button>
+      <button class="btn sm ghost danger-text" data-action="ps-delete" data-id="${p.id}" title="Delete">✕</button>
+    </td>
+  </tr>`;
+}
+
+VIEWS.tv = () => {
+  const ps = S.db.powerSchedules || [];
+  const paired = pairedTvs();
+  return `<header class="page-head">
+    <div><h1>TV power</h1><p class="sub">Switch the Google TVs on and off from here, by hand or on a schedule, the same way Google’s TV remote app on a phone does. Pair each TV once under <b>Set up</b>.</p></div>
+    <div class="row">
+      <button class="btn" data-action="tv-all" data-on="1" ${paired.length ? '' : 'disabled title="Pair a TV first"'}>All TVs on</button>
+      <button class="btn" data-action="tv-all" data-on="0" ${paired.length ? '' : 'disabled title="Pair a TV first"'}>All TVs off</button>
+      <button class="btn primary" data-action="ps-new">+ Power schedule</button>
+    </div>
+  </header>
+  <section class="card">
+    <div class="card-head"><h2>TVs</h2></div>
+    ${S.db.screens.length ? `<table class="table">
+      <thead><tr><th>Screen</th><th>TV</th><th class="hide-sm">Next</th><th></th></tr></thead>
+      <tbody>${S.db.screens.map(tvRow).join('')}</tbody></table>` : emptyBox('No screens yet', 'Add your screens on the Screens page first, then set up each one’s TV here.')}
+    <p class="muted small" style="margin-top:10px">Only Google TVs (and Android TVs) can be switched this way. Computers running the player in Chrome can’t; leave those without a TV.</p>
+  </section>
+  <section class="card">
+    <div class="card-head"><h2>Power schedules this week</h2></div>
+    ${weekView({ list: ps.filter((p) => p.enabled), label: (p) => (p.allScreens ? 'All TVs' : targetLabel(p).replace(/<[^>]+>/g, '')), color: tvColor, action: 'ps-edit',
+      tip: (p) => `${p.name} · on ${fmtTime(p.startTime)}, off ${fmtTime(p.endTime)}`,
+      note: 'TVs are switched on at the start of each block and off at the end. Click a block to edit it.',
+      empty: 'No power schedules. Add one to switch TVs on and off by themselves, e.g. on at 8:00 and off at 1:30pm on Sundays.' })}
+  </section>
+  <section class="card">
+    <div class="card-head"><h2>All power schedules</h2></div>
+    ${ps.length ? `<table class="table"><thead><tr><th>Name</th><th class="hide-sm">TVs</th><th>When</th><th>On</th><th></th></tr></thead>
+      <tbody>${[...ps].sort((a, b) => toMin(a.startTime) - toMin(b.startTime)).map(psRow).join('')}</tbody></table>`
+      : emptyBox('No power schedules yet', 'Example: “Sunday”: every Sunday, TVs on at 8:00am and off at 1:30pm.')}
+    <p class="muted small" style="margin-top:10px">A power schedule switches its TVs on when it starts and off when it ends. In between, anyone can still switch a TV by hand. Where schedules overlap, a TV stays on until the last one ends. If the server was off at the moment a TV should have switched, it catches up when it starts again. A TV that can’t be reached is tried again every minute for an hour.</p>
+  </section>`;
+};
+
+function psForm(p = {}) {
+  const days = p.days || [0];
+  const tvScreens = S.db.screens.filter((s) => tvInfo(s.id));
+  return `
+    <label class="field"><span>Name</span><input type="text" name="name" value="${esc(p.name || '')}" placeholder="e.g. Sunday" required></label>
+    <div class="field"><span class="field-label">TVs</span>${screenChips('screenIds', p.screenIds || [], p.allScreens ?? true).replace('All screens', 'All TVs')}
+      ${tvScreens.length < S.db.screens.length ? '<div class="hint">Screens without a paired TV are skipped.</div>' : ''}</div>
+    <div class="field"><span class="field-label">Days</span>
+      <div class="chips">${WEEK_ORDER.map((d) => `<label class="chip"><input type="checkbox" name="days" value="${d}" ${days.includes(d) ? 'checked' : ''}><span>${DAY_NAMES[d]}</span></label>`).join('')}</div>
+      <div class="row" style="margin-top:8px;gap:4px">
+        <button type="button" class="btn sm ghost" data-days="0,1,2,3,4,5,6">Every day</button>
+        <button type="button" class="btn sm ghost" data-days="1,2,3,4,5">Weekdays</button>
+        <button type="button" class="btn sm ghost" data-days="0">Sundays</button>
+        <button type="button" class="btn sm ghost" data-days="0,6">Weekends</button>
+      </div>
+    </div>
+    <div class="grid2">
+      <label class="field"><span>Switch on at</span><input type="time" name="startTime" value="${esc(p.startTime || '08:00')}" required></label>
+      <label class="field"><span>Switch off at</span><input type="time" name="endTime" value="${esc(p.endTime || '13:30')}" required></label>
+    </div>
+    <div class="hint" style="margin:-8px 0 14px">An off time earlier than the on time switches off the next day.</div>
+    <div class="grid2">
+      <label class="field"><span>From date <em class="muted">(optional)</em></span><input type="date" name="startDate" value="${esc(p.startDate || '')}"></label>
+      <label class="field"><span>Until date <em class="muted">(optional)</em></span><input type="date" name="endDate" value="${esc(p.endDate || '')}"></label>
+    </div>
+    <div class="hint" style="margin:-8px 0 14px">For a one-off event (e.g. Christmas Eve), set both dates to the same day.</div>
+    <div class="field"><span class="field-label">Status</span><label class="check"><input type="checkbox" name="enabled" ${p.enabled !== false ? 'checked' : ''}> Enabled</label></div>`;
+}
+
+function psBody(f) {
+  const v = fd(f);
+  const days = checkedValues(f, 'days').map(Number);
+  if (!days.length) throw new Error('Pick at least one day');
+  const allScreens = f.allScreens.checked;
+  const screenIds = checkedValues(f, 'screenIds');
+  if (!allScreens && !screenIds.length) throw new Error('Pick at least one TV');
+  if (v.startTime === v.endTime) throw new Error('The on and off times are the same');
+  if (v.startDate && v.endDate && v.endDate < v.startDate) throw new Error('The until date is before the from date');
+  return { name: v.name, allScreens, screenIds, days, startTime: v.startTime, endTime: v.endTime, startDate: v.startDate, endDate: v.endDate, enabled: f.enabled.checked };
+}
+
+function openPowerSchedule(p, { copy = false } = {}) {
+  const editing = p && p.id && !copy;
+  modal({
+    title: editing ? 'Edit power schedule' : 'Add power schedule', wide: true,
+    body: psForm(copy ? { ...p, name: p.name + ' (copy)' } : p || {}), saveLabel: editing ? 'Save' : 'Add schedule',
+    onSave: (f) => mutate(() => (editing ? api('PUT', '/api/powerSchedules/' + p.id, psBody(f)) : api('POST', '/api/powerSchedules', psBody(f))), editing ? 'Saved' : 'Power schedule added'),
+  });
+}
+
+/** Set up a screen's TV: its address, pairing (a code on the TV), and forgetting it. */
+function openTvSetup(id) {
+  const s = screen(id);
+  const t = tvInfo(id);
+  const body = `
+    <p class="muted small" style="margin-top:0">Find the TV’s address on the TV: <b>Settings → Network &amp; Internet →</b> your network. It looks like 192.168.1.50. Giving the TV a fixed address in your router (a <i>DHCP reservation</i>) stops it changing.</p>
+    <div class="tv-status">${t && t.paired ? `Paired with <b>${esc(t.host)}</b>${t.model ? ` (${esc(t.model)})` : ''} · ${esc(tvState(t).text)}` : ''}</div>
+    <div data-step="addr">
+      <label class="field"><span>TV address</span><input type="text" name="host" value="${esc((t && t.host) || '')}" placeholder="e.g. 192.168.1.50" autocomplete="off"></label>
+      <div class="row"><button type="button" class="btn primary" data-pair>${t && t.paired ? 'Pair again' : 'Pair'}</button>
+        ${t ? '<span class="grow"></span><button type="button" class="btn ghost danger-text" data-forget>Forget this TV</button>' : ''}</div>
+      <div class="hint">Pairing shows a code on the TV, so make sure it’s switched on and you can see it.</div>
+    </div>
+    <div data-step="code" hidden>
+      <p><b>A code is showing on the TV.</b> Type it here. It’s 6 characters: numbers and the letters A–F.</p>
+      <label class="field"><span>Code</span><input type="text" name="code" maxlength="8" autocomplete="off" style="text-transform:uppercase;letter-spacing:.2em;font-size:20px"></label>
+      <div class="row"><button type="button" class="btn primary" data-code>Finish pairing</button><button type="button" class="btn" data-cancel>Cancel</button></div>
+    </div>
+    <div class="tv-msg small" data-msg></div>`;
+  const md = modal({ title: `TV power: ${s.name}`, body, hideSave: true });
+  const f = md.form;
+  const msg = (text, bad) => { const el = $('[data-msg]', f); el.textContent = text; el.className = 'tv-msg small ' + (bad ? 'warn-text' : 'muted'); };
+  const step = (n) => { $('[data-step=addr]', f).hidden = n !== 'addr'; $('[data-step=code]', f).hidden = n !== 'code'; if (n === 'code') f.code.focus(); };
+  const busy = (b) => $$('button', f).forEach((x) => (x.disabled = b));
+  f.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    (e.target.name === 'code' ? $('[data-code]', f) : $('[data-pair]', f)).click();
+  });
+  $('[data-pair]', f).addEventListener('click', async () => {
+    busy(true); msg('Asking the TV to show a code…');
+    try {
+      await api('POST', `/api/screens/${id}/tv/pair`, { host: f.host.value.trim() });
+      msg(''); step('code');
+    } catch (e) { msg(e.message, true); }
+    busy(false);
+  });
+  $('[data-code]', f).addEventListener('click', async () => {
+    busy(true); msg('Checking…');
+    try {
+      const r = await api('POST', `/api/screens/${id}/tv/code`, { code: f.code.value });
+      if (!r.ok) { msg(r.problem, true); f.code.select(); }
+      else { md.close(); await refresh(); render(); toast(`Paired with ${s.name}’s TV`); return; }
+    } catch (e) { msg(e.message, true); step('addr'); }
+    busy(false);
+  });
+  $('[data-cancel]', f).addEventListener('click', () => { api('POST', `/api/screens/${id}/tv/cancel`).catch(() => {}); step('addr'); msg(''); });
+  const forget = $('[data-forget]', f);
+  if (forget) forget.addEventListener('click', async () => {
+    md.close();
+    if (await confirmBox('Forget this TV?', `The server stops switching <b>${esc(s.name)}</b>’s TV on and off, and its power schedules skip it. You can pair it again at any time.`, 'Forget')) mutate(() => api('DELETE', `/api/screens/${id}/tv`), 'TV forgotten');
+  });
+  md.back.addEventListener('click', (e) => { if (e.target.closest('[data-close]') && !$('[data-step=code]', f).hidden) api('POST', `/api/screens/${id}/tv/cancel`).catch(() => {}); });
+}
+
+async function tvPower(id, on) {
+  const t = S.tvs[id];
+  if (t) t.busy = on ? 'on' : 'off';
+  render();
+  try {
+    const r = await api('POST', `/api/screens/${id}/tv/power`, { on });
+    toast(r.changed ? `${screen(id).name}: TV switched ${on ? 'on' : 'off'}` : `${screen(id).name}: TV was already ${on ? 'on' : 'in standby'}`);
+  } catch (e) { toast(`${screen(id).name}: ${e.message}`, 'error'); }
+  await refresh(); render();
+}
+
 /* ---------- Users (administrators only) ---------- */
 
 function fmtWhen(ts) {
@@ -1490,6 +1717,29 @@ const ACTIONS = {
   'screen-delete': async (d) => {
     const s = screen(d.id);
     if (await confirmBox('Delete screen?', `Delete <b>${esc(s.name)}</b>? The TV showing it will go back to the “Which screen is this?” picker.`)) mutate(() => api('DELETE', '/api/screens/' + s.id), 'Screen deleted');
+  },
+  'tv-setup': (d) => openTvSetup(d.id),
+  'tv-power': (d) => tvPower(d.id, d.on === '1'),
+  'tv-check': async (d) => { try { await api('POST', `/api/screens/${d.id}/tv/check`); } catch (e) { toast(e.message, 'error'); } await refresh(); render(); },
+  'tv-all': async (d) => {
+    const on = d.on === '1';
+    for (const s of pairedTvs()) S.tvs[s.id].busy = on ? 'on' : 'off';
+    render();
+    try {
+      const r = await api('POST', '/api/tvs/power', { on });
+      const bad = r.results.filter((x) => !x.ok);
+      if (bad.length) toast(`${bad.map((x) => screen(x.id)?.name).join(', ')}: couldn’t switch ${on ? 'on' : 'off'}. ${bad[0].error}`, 'error');
+      else toast(`All TVs switched ${on ? 'on' : 'off'}`);
+    } catch (e) { toast(e.message, 'error'); }
+    await refresh(); render();
+  },
+  'ps-new': () => openPowerSchedule(null),
+  'ps-edit': (d) => openPowerSchedule((S.db.powerSchedules || []).find((x) => x.id === d.id)),
+  'ps-dup': (d) => openPowerSchedule((S.db.powerSchedules || []).find((x) => x.id === d.id), { copy: true }),
+  'ps-toggle': (d, el) => mutate(() => api('PUT', '/api/powerSchedules/' + d.id, { enabled: el.checked }), el.checked ? 'Power schedule on' : 'Power schedule off'),
+  'ps-delete': async (d) => {
+    const p = (S.db.powerSchedules || []).find((x) => x.id === d.id);
+    if (await confirmBox('Delete power schedule?', `Delete <b>${esc(p.name)}</b>? TVs stay as they are right now.`)) mutate(() => api('DELETE', '/api/powerSchedules/' + d.id), 'Power schedule deleted');
   },
   'screen-identify': (d) => mutate(() => api('POST', `/api/screens/${d.id}/identify`), 'Showing the screen name on that TV for 15 seconds'),
 
@@ -1737,7 +1987,7 @@ async function tick() {
     await refresh();
     applyBranding();
     const busy = $('.modal-back') || (document.activeElement && document.activeElement.closest('form, .takeover-form'));
-    if (tab === 'screens' && !busy) render();
+    if ((tab === 'screens' || tab === 'tv') && !busy) render();
     else if (tab === 'music' && !busy && $('#music-now') && !document.activeElement?.closest('#music-now')) {
       $('#music-now').innerHTML = musicNow();
       bindMusicNow();
