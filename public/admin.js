@@ -259,8 +259,34 @@ function render() {
   $$('.nav a').forEach((a) => { a.classList.toggle('active', a.dataset.tab === tab); a.hidden = !tabAllowed(a.dataset.tab); });
   $('#view').innerHTML = VIEWS[tab]();
   AFTER[tab] && AFTER[tab]();
+  fitWeek();
   renderSideFoot();
 }
+
+/** Calendar blocks: words are never split, so where a long word is wider than its block, the block's text is made a little smaller until it fits. */
+function fitWeek() {
+  for (const el of $$('.week .blk .in, .week .ad')) {
+    el.style.fontSize = '';
+    el.classList.remove('brk');
+    let size = 11;
+    while (el.scrollWidth > el.clientWidth + 1 && size > 9.5) { size -= 0.5; el.style.fontSize = size + 'px'; }
+    // Still too wide: split the word after all, unless the block is too narrow for that to help (phones).
+    if (el.scrollWidth > el.clientWidth + 1 && el.clientWidth >= 50) { el.style.fontSize = ''; el.classList.add('brk'); }
+  }
+  // A short block (up to about 3 lines tall) whose text doesn't fit grows downwards into the empty space below it.
+  for (const blk of $$('.week .blk[data-free]')) {
+    if (blk.offsetHeight > 48 || blk.offsetWidth < 50) continue;
+    const inner = $('.in', blk);
+    const want = inner.scrollHeight + 6;
+    const h = Math.min(+blk.dataset.free, want);
+    if (want > blk.offsetHeight + 1 && h > blk.offsetHeight) {
+      blk.style.height = h + 'px';
+      inner.style.webkitLineClamp = inner.style.lineClamp = Math.max(1, Math.floor((h - 6) / 14));
+    }
+  }
+}
+let fitTimer;
+window.addEventListener('resize', () => { clearTimeout(fitTimer); fitTimer = setTimeout(fitWeek, 150); });
 
 /** Bottom of the sidebar: who's signed in, plus screen status for administrators. */
 function renderSideFoot() {
@@ -973,19 +999,19 @@ function appliesOn(s, d) {
 
 /**
  * Lays out one day's blocks so overlapping ones stay readable (as Google Calendar does):
- *  - blocks starting at about the same time (within 45 minutes) sit side by side, lower priority on the left
+ *  - blocks starting close together (too close for the first one's name to show) sit side by side, lower priority on the left
  *  - a block starting later than one it overlaps is indented a little and drawn on top of it, so both
  *    names show and long background schedules stay wide
  * Each block gets left/width (percent of the column) and a stacking level.
  */
-function layoutDay(segs) {
+function layoutDay(segs, near = 45) {
   const items = segs.map(([s, a, b]) => ({ s, a, b })).sort((x, y) => x.a - y.a || y.b - x.b);
   const placed = [];
   for (let i = 0; i < items.length;) {
     const first = items[i];
     const row = [first];
     let j = i + 1;
-    while (j < items.length && items[j].a - first.a < 45 && items[j].a < first.b) row.push(items[j++]);
+    while (j < items.length && items[j].a - first.a < near && items[j].a < first.b) row.push(items[j++]);
     const under = placed.filter((o) => o.a <= first.a && first.a < o.b);
     const level = under.length ? Math.max(...under.map((o) => o.level)) + 1 : 0;
     const left = Math.min(level * 8, 32);
@@ -1004,15 +1030,18 @@ function weekView(o = {}) {
   const colorOf = o.color || schedColor;
   const action = o.action || 'sched-edit';
   const tipOf = o.tip || ((s) => `${s.name} · ${label(s)} · ${fmtTime(s.startTime)}–${fmtTime(s.endTime)} · priority ${s.priority}`);
-  const HOUR = 24; // px per hour
+  const HOUR = 36; // px per hour
+  const LINE = 14; // px per line of text in a block
   const now = new Date(S.now);
   const monday = new Date(now);
   monday.setHours(0, 0, 0, 0);
   monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
   const days = [...Array(7)].map((_, i) => { const d = new Date(monday); d.setDate(d.getDate() + i); return d; });
   const scheds = o.list || S.db.schedules.filter((s) => s.enabled && s.playlistId && (timelineScreen === 'all' || s.allScreens || s.screenIds.includes(timelineScreen)));
+  const when = (s) => (toMin(s.startTime) === toMin(s.endTime) ? 'All day' : `${fmtTime(s.startTime)}–${fmtTime(s.endTime)}`);
 
-  const cols = days.map((d) => {
+  // Each day's pieces of schedules. Ones covering the whole day go in the "All day" row instead of the grid.
+  const perDay = days.map((d) => {
     const prev = new Date(d); prev.setDate(prev.getDate() - 1);
     const segs = [];
     for (const s of scheds) {
@@ -1024,27 +1053,49 @@ function weekView(o = {}) {
       }
       if (st > en && en > 0 && appliesOn(s, prev)) segs.push([s, 0, en]);
     }
-    const blocks = layoutDay(segs).map((it) => {
-      const { s, a, b } = it;
-      const h = ((b - a) / 60) * HOUR;
-      const room = (it.room / 60) * HOUR; // visible height before another block covers it
-      const cls = (a === 0 && toMin(s.startTime) > 0 ? ' from-prev' : '') + (b === 1440 && toMin(s.endTime) > 0 && toMin(s.endTime) < toMin(s.startTime) ? ' to-next' : '');
-      const when = toMin(s.startTime) === toMin(s.endTime) ? 'All day' : `${fmtTime(s.startTime)}–${fmtTime(s.endTime)}`;
-      const sub = label(s);
-      return `<div class="blk${cls}${h < 30 ? ' tiny' : ''}${it.level ? ' over' : ''}" data-action="${action}" data-id="${s.id}" title="${esc(tipOf(s))}"
-        style="--c:${colorOf(s)};top:${(a / 60) * HOUR}px;height:${Math.max(16, h - 2)}px;left:calc(${it.left.toFixed(2)}% + 2px);width:calc(${it.width.toFixed(2)}% - 4px);z-index:${10 + it.level}">
-        <b>${esc(s.name)}</b>${room >= 44 ? `<span>${esc(when)}</span>` : ''}${room >= 60 && sub ? `<span>${esc(sub)}</span>` : ''}</div>`;
-    }).join('');
-    const isToday = ymd(d) === ymd(now);
-    const line = isToday ? `<div class="nowline" style="top:${((now.getHours() * 60 + now.getMinutes()) / 60) * HOUR}px"></div>` : '';
-    return { d, isToday, html: `<div class="col ${isToday ? 'today' : ''}" style="height:${24 * HOUR}px">${blocks}${line}</div>` };
+    const whole = segs.filter(([, a, b]) => a <= 0 && b >= 1439);
+    return { d, allDay: whole.map(([s]) => s), timed: segs.filter((x) => !whole.includes(x)) };
   });
 
-  const hours = [...Array(12)].map((_, i) => `<span style="top:${i * 2 * HOUR}px">${i === 0 ? '' : fmtTime(`${i * 2}:00`)}</span>`).join('');
+  // Show only the hours in use (at least 7am–10pm), so there's room for the text.
+  const timed = perDay.flatMap((p) => p.timed);
+  const fromH = Math.min(7, ...timed.map(([, a]) => Math.floor(a / 60)));
+  const toH = Math.max(22, ...timed.map(([, , b]) => Math.ceil(b / 60)));
+  const top = (mins) => ((mins - fromH * 60) / 60) * HOUR;
+  const height = (toH - fromH) * HOUR;
+  const near = Math.ceil(((LINE * 2 + 6) / HOUR) * 60); // closer starts than this sit side by side
+
+  const cols = perDay.map(({ d, timed: segs }) => {
+    const laid = layoutDay(segs, near);
+    const blocks = laid.map((it) => {
+      const { s, a, b } = it;
+      const h = ((b - a) / 60) * HOUR;
+      const room = Math.min(h, (it.room / 60) * HOUR); // visible height before another block covers it
+      const lines = Math.max(1, Math.floor((room - 6) / LINE));
+      // Empty space below a short block, up to the next block in its place: it can grow into it to show its name.
+      const next = Math.min(toH * 60, ...laid.filter((o) => o !== it && o.a > it.a && o.left < it.left + it.width && it.left < o.left + o.width).map((o) => o.a));
+      const free = Math.floor(((next - a) / 60) * HOUR) - 3;
+      const cls = (a === 0 && toMin(s.startTime) > 0 ? ' from-prev' : '') + (b === 1440 && toMin(s.endTime) > 0 && toMin(s.endTime) < toMin(s.startTime) ? ' to-next' : '');
+      const sub = label(s);
+      return `<div class="blk${cls}${it.level ? ' over' : ''}" data-action="${action}" data-id="${s.id}" title="${esc(tipOf(s))}"${free > h ? ` data-free="${free}"` : ''}
+        style="--c:${colorOf(s)};top:${top(a)}px;height:${Math.max(LINE + 4, h - 2)}px;left:calc(${it.left.toFixed(2)}% + 2px);width:calc(${it.width.toFixed(2)}% - 4px);z-index:${10 + it.level}">
+        <div class="in" style="-webkit-line-clamp:${lines};line-clamp:${lines}"><b>${esc(s.name)}</b><br><span>${esc(when(s))}</span>${sub ? `<br><span>${esc(sub)}</span>` : ''}</div></div>`;
+    }).join('');
+    const isToday = ymd(d) === ymd(now);
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const line = isToday && nowMin >= fromH * 60 && nowMin <= toH * 60 ? `<div class="nowline" style="top:${top(nowMin)}px"></div>` : '';
+    return { d, isToday, html: `<div class="col ${isToday ? 'today' : ''}" style="height:${height}px">${blocks}${line}</div>` };
+  });
+
+  const anyAllDay = perDay.some((p) => p.allDay.length);
+  const allDayRow = anyAllDay ? `<div class="ad-label">All day</div>${perDay.map((p) => `<div class="ad-cell ${ymd(p.d) === ymd(now) ? 'today' : ''}">${p.allDay.map((s) => `
+      <div class="ad" data-action="${action}" data-id="${s.id}" title="${esc(tipOf(s))}" style="--c:${colorOf(s)}"><b>${esc(s.name)}</b>${label(s) ? `<span>${esc(label(s))}</span>` : ''}</div>`).join('')}</div>`).join('')}` : '';
+  const hours = [...Array(toH - fromH)].map((_, i) => `<span style="top:${i * HOUR}px">${i === 0 ? '' : fmtTime(`${fromH + i}:00`)}</span>`).join('');
   return `<div class="week" style="--hour:${HOUR}px">
     <div class="hd"></div>
     ${cols.map((c) => `<div class="hd ${c.isToday ? 'today' : ''}">${DAY_NAMES[c.d.getDay()]}<small>${c.d.getDate()}/${c.d.getMonth() + 1}</small></div>`).join('')}
-    <div class="hours" style="height:${24 * HOUR}px">${hours}</div>
+    ${allDayRow}
+    <div class="hours" style="height:${height}px">${hours}</div>
     ${cols.map((c) => c.html).join('')}
   </div>
   <div class="legend-note">${scheds.length ? (o.note || 'Where schedules overlap, the one with the higher priority wins. Point at a block to see its priority, or click it to edit it.') : (o.empty || 'Nothing is scheduled this week — screens will play their default playlists.')}</div>`;

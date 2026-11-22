@@ -104,7 +104,13 @@ Schedule tips:
 - An end time earlier than the start time runs overnight, e.g. 22:00 → 02:00.
 - The same start and end time means all day.
 - For a one-off event, set both dates to the same day.
-- **This week**, at the top of the Schedules page, shows the week as a calendar. Schedules that start at about the same time sit side by side; one that starts later is drawn slightly indented on top of the one it overlaps. Point at a block to see its times and priority, or click it to edit it. The Music and TV power pages show their schedules the same way.
+- **This week**, at the top of the Schedules page, shows the week as a calendar:
+  - schedules that run the whole day (e.g. 12am–11:59pm) are listed in the **All day** row at the top, not in the grid
+  - only the hours in use are shown (at least 7am–10pm)
+  - schedules that start close together sit side by side; one that starts later is drawn slightly indented on top of the one it overlaps
+  - names wrap onto more lines rather than being cut off, and a short schedule's block grows into empty space below it to show its full name
+
+  Point at a block to see its times and priority, or click it to edit it. The Music and TV power pages show their schedules the same way.
 
 **Play once:** for a playlist that should run through a single time at a set moment (a welcome video at 9:30, a countdown then a sermon intro), set the playlist's **At the end** to **Play once**. Then schedule it, or use it for a takeover.
 

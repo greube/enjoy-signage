@@ -262,23 +262,33 @@ details summary { cursor: pointer; }
 .toggle input:checked + span { background: var(--ok); }
 .toggle input:checked + span::after { transform: translateX(16px); }
 
-.week { display: grid; grid-template-columns: 46px repeat(7, 1fr); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.week { display: grid; grid-template-columns: 46px repeat(7, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
 .week .hd { font-size: 12.5px; font-weight: 650; padding: 8px 6px; text-align: center; border-bottom: 1px solid var(--line); background: var(--line-2); }
 .week .hd.today { color: var(--accent); }
 .week .hd small { display: block; font-weight: 500; color: var(--muted); }
 .week .hours { position: relative; border-right: 1px solid var(--line); }
 .week .hours span { position: absolute; right: 6px; font-size: 10.5px; color: var(--muted); transform: translateY(-50%); }
-.week .col { position: relative; border-right: 1px solid var(--line-2); background-image: linear-gradient(var(--line-2) 1px, transparent 1px); background-size: 100% calc(var(--hour) * 2); }
+.week .col { position: relative; border-right: 1px solid var(--line-2); background-image: linear-gradient(var(--line-2) 1px, transparent 1px); background-size: 100% var(--hour); }
 .week .col:last-child { border-right: 0; }
 .week .col.today { background-color: color-mix(in srgb, var(--accent-soft) 45%, transparent); }
-.blk { position: absolute; box-sizing: border-box; border-radius: 6px; padding: 3px 6px 3px 7px; font-size: 11px; line-height: 1.3; color: var(--ink); overflow: hidden; cursor: pointer;
+.blk { position: absolute; box-sizing: border-box; border-radius: 6px; padding: 3px 5px 2px 6px; font-size: 11px; line-height: 14px; color: var(--ink); overflow: hidden; cursor: pointer;
   background: color-mix(in srgb, var(--c) 17%, var(--panel)); border: 1px solid color-mix(in srgb, var(--c) 35%, var(--panel)); border-left: 3px solid var(--c); z-index: 10; }
-.blk b { display: block; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.blk span { display: block; color: var(--ink-2); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.blk.tiny { padding-top: 1px; padding-bottom: 0; }
+.blk .in { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+.blk .in.brk, .ad.brk { overflow-wrap: anywhere; }
+.blk b { font-weight: 650; }
+.blk span { color: var(--ink-2); font-size: .95em; }
 .blk.over { box-shadow: 0 0 0 2px var(--panel), 0 2px 6px rgba(0,0,0,.12); }
 .blk.from-prev { border-top-left-radius: 0; border-top-right-radius: 0; border-top-style: dashed; }
 .blk.to-next { border-bottom-left-radius: 0; border-bottom-right-radius: 0; border-bottom-style: dashed; }
+.week .ad-label { font-size: 10.5px; color: var(--muted); text-align: right; padding: 6px 6px 0 0; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.week .ad-cell { padding: 3px 2px; display: flex; flex-direction: column; gap: 3px; border-right: 1px solid var(--line-2); border-bottom: 1px solid var(--line); min-height: 24px; }
+.week .ad-cell:last-child { border-right: 0; }
+.week .ad-cell.today { background-color: color-mix(in srgb, var(--accent-soft) 45%, transparent); }
+.ad { border-radius: 5px; padding: 2px 5px 2px 6px; font-size: 11px; line-height: 14px; cursor: pointer; overflow: hidden;
+  background: color-mix(in srgb, var(--c) 17%, var(--panel)); border: 1px solid color-mix(in srgb, var(--c) 35%, var(--panel)); border-left: 3px solid var(--c); }
+.ad b { font-weight: 650; display: block; }
+.ad span { display: block; color: var(--ink-2); font-size: .95em; }
+.ad:hover { background: color-mix(in srgb, var(--c) 28%, var(--panel)); }
 .blk:hover { background: color-mix(in srgb, var(--c) 28%, var(--panel)); z-index: 50 !important; }
 .nowline { position: absolute; left: 0; right: 0; height: 2px; background: var(--danger); z-index: 60; }
 .nowline::before { content: ""; position: absolute; left: -4px; top: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
@@ -314,7 +324,7 @@ pre { background: var(--line-2); border: 1px solid var(--line); border-radius: 8
   .split { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
-  .blk { padding: 2px 3px 2px 4px; } .blk span { display: none; }
+  .blk { padding: 2px 2px 2px 3px; } .ad span, .blk .in span, .blk .in br { display: none; }
   .app { flex-direction: column; }
   .side { width: 100%; height: auto; position: static; }
   .brand { padding: 14px 16px; }
@@ -342,6 +352,7 @@ pre { background: var(--line-2); border: 1px solid var(--line); border-radius: 8
 .tv-status { margin-bottom: 12px; }
 .tv-msg { min-height: 1.4em; margin-top: 10px; }
 @media (prefers-color-scheme: dark) {
-  .blk { background: color-mix(in srgb, var(--c) 26%, var(--panel)); border-color: color-mix(in srgb, var(--c) 45%, var(--panel)); }
+  .blk, .ad { background: color-mix(in srgb, var(--c) 26%, var(--panel)); border-color: color-mix(in srgb, var(--c) 45%, var(--panel)); }
   .blk:hover { background: color-mix(in srgb, var(--c) 36%, var(--panel)); }
 }
+@media (prefers-color-scheme: dark) { .blk, .ad { border-left-color: var(--c); } }
